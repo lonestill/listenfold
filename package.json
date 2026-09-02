@@ -1,0 +1,148 @@
+{
+  "name": "listenfold",
+  "version": "0.1.0",
+  "description": "Desktop music player for YouTube Music and Yandex Music",
+  "author": "Listenfold Contributors",
+  "license": "MIT",
+  "private": true,
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:web": "node server.js",
+    "dev": "electron .",
+    "dev:web": "node --watch server.js",
+    "check": "node --check server.js && node --check desktop/main.js && node --check desktop/menu.js && node --check desktop/preload.js && node --check public/js/app.js && node --check public/sw.js",
+    "smoke": "node scripts/smoke-server.js",
+    "verify": "npm run check && npm run smoke",
+    "engine:prepare": "node scripts/fetch-ytdlp.js",
+    "release:prepare": "npm run engine:prepare && npm run verify",
+    "release:prepare:mac": "node scripts/fetch-ytdlp.js darwin && npm run verify",
+    "release:prepare:win": "node scripts/fetch-ytdlp.js win32 x64 && npm run verify",
+    "release:prepare:linux": "node scripts/fetch-ytdlp.js linux x64 && npm run verify",
+    "pack": "npm run release:prepare && electron-builder --dir",
+    "pack:mac": "npm run release:prepare:mac && electron-builder --mac --dir",
+    "pack:win": "npm run release:prepare:win && electron-builder --win --dir",
+    "pack:linux": "npm run release:prepare:linux && electron-builder --linux --dir",
+    "dist": "npm run release:prepare && electron-builder",
+    "dist:mac": "npm run release:prepare:mac && electron-builder --mac",
+    "dist:win": "npm run release:prepare:win && electron-builder --win",
+    "dist:linux": "npm run release:prepare:linux && electron-builder --linux",
+    "dist:all": "npm run dist:mac && npm run dist:win && npm run dist:linux"
+  },
+  "dependencies": {
+    "express": "4.22.2",
+    "node-cache": "^5.1.2"
+  },
+  "devDependencies": {
+    "electron": "^44.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "overrides": {
+    "qs": "6.16.0"
+  },
+  "build": {
+    "appId": "app.listenfold.desktop",
+    "productName": "Listenfold",
+    "executableName": "listenfold",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "protocols": [
+      {
+        "name": "Listenfold",
+        "schemes": [
+          "listenfold"
+        ]
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "build/bin",
+        "to": "bin",
+        "filter": [
+          "yt-dlp",
+          "yt-dlp.exe"
+        ]
+      }
+    ],
+    "files": [
+      "desktop/**/*",
+      "public/**/*",
+      "server.js",
+      "export-cookies.py",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "server.js",
+      "export-cookies.py",
+      "public/**/*",
+      "node_modules/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Listenfold"
+    },
+    "linux": {
+      "icon": "build/icons",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Audio"
+    }
+  }
+}

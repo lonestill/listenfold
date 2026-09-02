@@ -1,0 +1,26 @@
+# Dependencies & builds
+node_modules/
+dist/
+.cache/
+
+# Bundled binaries
+build/bin/*
+!build/bin/.gitkeep
+
+# Environment & credentials
+.env
+.env.*
+!.env.example
+
+# Logs & temp
+*.log
+*.tmp
+*.swp
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sublime-workspace
+
