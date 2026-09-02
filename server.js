@@ -2911,18 +2911,31 @@ async function prepareYouTubeTrack(url) {
   if (activeDownloads.has(url)) return activeDownloads.get(url);
 
   const promise = (async () => {
-    // 3 parallel extraction strategies (race: fastest valid stream wins)
+    // Battle-tested multi-strategy race for dirty/datacenter/VPN IPs
     const strategies = [
       {
-        name: 'tv_creator',
+        name: 'visionos_nocookies',
+        useCookies: false,
+        args: ['--extractor-args', 'youtube:player_client=visionos;player_skip=webpage,configs', '-f', 'bestaudio[ext=webm]/bestaudio/ba/b'],
+      },
+      {
+        name: 'tv_creator_nocookies',
+        useCookies: false,
         args: ['--extractor-args', 'youtube:player_client=tv_embedded,web_creator', '-f', 'ba/b'],
       },
       {
-        name: 'android_ios',
-        args: ['--extractor-args', 'youtube:player_client=android,ios,web', '-f', 'ba/b'],
+        name: 'tv_web_cookies',
+        useCookies: true,
+        args: ['--extractor-args', 'youtube:player_client=tv,web,mweb', '-f', 'ba/b'],
       },
       {
-        name: 'standard_dlp',
+        name: 'android_ios_nocookies',
+        useCookies: false,
+        args: ['--extractor-args', 'youtube:player_client=android,ios', '-f', 'ba/b'],
+      },
+      {
+        name: 'standard_cookies',
+        useCookies: true,
         args: ['-f', 'ba/b'],
       },
     ];
@@ -2956,8 +2969,9 @@ async function prepareYouTubeTrack(url) {
         stratBases.push(stratBase);
         const template = `${stratBase}.%(ext)s`;
 
+        const authArgs = strat.useCookies !== false ? cookieArgs() : [];
         const proc = spawn(ytdlpBinary, [
-          ...cookieArgs(),
+          ...authArgs,
           ...strat.args,
           '-o', template,
           '--no-playlist', '--no-warnings', '--no-progress',
