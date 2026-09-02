@@ -5259,10 +5259,14 @@ function initSettings() {
       const spYtState = $('#spYtState');
 
       if (spYmDot && spYmState) {
-        if (data.yandexSession) {
+        if (data.yandexSession && data.yandexHasPlus) {
           spYmDot.className = 'status-dot active';
-          spYmState.textContent = 'Вход выполнен (Плюс)';
+          spYmState.textContent = data.yandexUsername ? `Вход: ${data.yandexUsername} (Плюс)` : 'Вход выполнен (Плюс)';
           spYmState.style.color = '#34d399';
+        } else if (data.yandexSession && !data.yandexHasPlus) {
+          spYmDot.className = 'status-dot warning';
+          spYmState.textContent = data.yandexUsername ? `Вход: ${data.yandexUsername} (нет Плюса, 30с)` : 'Вход без подписки (превью 30с)';
+          spYmState.style.color = '#fbbf24';
         } else {
           spYmDot.className = 'status-dot';
           spYmState.textContent = 'Не авторизован (превью 30с)';
@@ -5277,7 +5281,7 @@ function initSettings() {
           spYtState.style.color = '#34d399';
         } else {
           spYtDot.className = 'status-dot';
-          spYtState.textContent = 'Не авторизован (риск 403)';
+          spYtState.textContent = 'Не авторизован (гость)';
           spYtState.style.color = 'var(--text-muted)';
         }
       }

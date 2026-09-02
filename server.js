@@ -14,6 +14,7 @@ if (process.resourcesPath) {
 const express = require('express');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -369,10 +370,42 @@ function getCookieHealth() {
     ok: count > 0,
     filePresent: Boolean(stat && stat.size > 0),
     loaded: count > 0,
-    yandexSession: /(?:^|;\s*)(?:Session_id|sessionid2|yandex_login)=/i.test(yandexCookies),
-    youtubeSession: /(?:^|;\s*)(?:SAPISID|__Secure-\d?PAPISID|SID|LOGIN_INFO)=/i.test(youtubeCookies),
+    yandexSession: /(?:^|;\s*)(?:Session_id|sessionid2)=/i.test(yandexCookies) && /(?:^|;\s*)yandex_login=[^;]+/i.test(yandexCookies),
+    youtubeSession: /(?:^|;\s*)(?:SAPISID|__Secure-\d?PAPISID)=/i.test(youtubeCookies),
     updatedAt: stat ? stat.mtime.toISOString() : null,
   };
+}
+
+async function checkYandexAuthStatus() {
+  const cached = cache.get('ym_auth_status');
+  if (cached) return cached;
+
+  const yandexCookies = getCookieString('yandex');
+  const hasSession = /(?:^|;\s*)(?:Session_id|sessionid2)=/i.test(yandexCookies);
+  if (!hasSession) {
+    const res = { authenticated: false, hasPlus: false, username: null };
+    cache.set('ym_auth_status', res, 30);
+    return res;
+  }
+
+  try {
+    const acc = await ymApi('/account/status', {}, false);
+    const account = acc.result?.account || acc.account;
+    const uid = account?.uid;
+    const hasPlus = Boolean(acc.result?.plus?.hasPlus || acc.plus?.hasPlus);
+    const username = account?.login || account?.fullName || account?.displayName || null;
+    const res = {
+      authenticated: Boolean(uid),
+      hasPlus,
+      username,
+    };
+    cache.set('ym_auth_status', res, 60);
+    return res;
+  } catch {
+    const res = { authenticated: false, hasPlus: false, username: null };
+    cache.set('ym_auth_status', res, 15);
+    return res;
+  }
 }
 
 function cookieArgs() {
@@ -2293,37 +2326,56 @@ async function loadYandexLibrary() {
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  const acc = await ymApi('/account/status');
-  const account = acc.result?.account || acc.account;
-  const uid = account?.uid;
-  const displayName = account?.fullName || account?.displayName || 'Моя музыка';
-  if (!uid) throw new Error('Пользователь Яндекс.Музыки не найден в сессии');
-
-  const likesData = await ymApi(`/users/${uid}/likes/tracks`);
-  const trackItems = likesData.result?.library?.tracks || likesData.library?.tracks || [];
-  const trackIds = trackItems.map(track => track.id).filter(Boolean).slice(0, MAX_LIBRARY_TRACKS);
-  const tracks = [];
-  const batchSize = 50;
-
-  for (let i = 0; i < trackIds.length; i += batchSize) {
-    const batch = trackIds.slice(i, i + batchSize);
-    const body = `track-ids=${batch.join(',')}`;
-    try {
-      const batchData = await ymApi('/tracks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      });
-      const list = Array.isArray(batchData) ? batchData : (batchData.result || []);
-      tracks.push(...list.map(ymTrack));
-    } catch (err) {
-      console.warn('Track batch error:', err.message);
+  try {
+    const acc = await ymApi('/account/status', {}, false);
+    const account = acc.result?.account || acc.account;
+    const uid = account?.uid;
+    const displayName = account?.fullName || account?.displayName || 'Моя музыка';
+    if (!uid) {
+      return {
+        tracks: [],
+        username: 'Яндекс Музыка',
+        unauthenticated: true,
+        error: 'Требуется авторизация в Яндекс Музыке',
+      };
     }
-  }
 
-  const result = { tracks, username: displayName };
-  cache.set(cacheKey, result, 180);
-  return result;
+    const likesData = await ymApi(`/users/${uid}/likes/tracks`);
+    const trackItems = likesData.result?.library?.tracks || likesData.library?.tracks || [];
+    const trackIds = trackItems.map(track => track.id).filter(Boolean).slice(0, MAX_LIBRARY_TRACKS);
+    const tracks = [];
+    const batchSize = 50;
+
+    for (let i = 0; i < trackIds.length; i += batchSize) {
+      const batch = trackIds.slice(i, i + batchSize);
+      const body = `track-ids=${batch.join(',')}`;
+      try {
+        const batchData = await ymApi('/tracks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+        });
+        const list = Array.isArray(batchData) ? batchData : (batchData.result || []);
+        tracks.push(...list.map(ymTrack));
+      } catch (err) {
+        console.warn('Track batch error:', err.message);
+      }
+    }
+
+    const result = { tracks, username: displayName };
+    cache.set(cacheKey, result, 180);
+    return result;
+  } catch (err) {
+    if (/401|не найден в сессии|unauthorized/i.test(err.message)) {
+      return {
+        tracks: [],
+        username: 'Яндекс Музыка',
+        unauthenticated: true,
+        error: 'Требуется авторизация в Яндекс Музыке',
+      };
+    }
+    throw err;
+  }
 }
 
 async function loadYouTubeLibrary() {
@@ -2341,17 +2393,29 @@ async function loadYouTubeLibrary() {
     };
   }
 
-  const raw = await ytdlp([
-    ...cookieArgs(),
-    '--extractor-args', 'youtube:player_client=web_music',
-    'https://music.youtube.com/playlist?list=LM',
-    '--dump-json', '--flat-playlist', '--no-download', '--no-warnings',
-    '--playlist-end', String(MAX_LIBRARY_TRACKS),
-  ], 30000);
-  const tracks = parseYouTubeTracks(raw).slice(0, MAX_LIBRARY_TRACKS);
-  const result = { tracks, username: 'Liked Music' };
-  cache.set(cacheKey, result, 180);
-  return result;
+  try {
+    const raw = await ytdlp([
+      ...cookieArgs(),
+      '--extractor-args', 'youtube:player_client=web_music',
+      'https://music.youtube.com/playlist?list=LM',
+      '--dump-json', '--flat-playlist', '--no-download', '--no-warnings',
+      '--playlist-end', String(MAX_LIBRARY_TRACKS),
+    ], 30000);
+    const tracks = parseYouTubeTracks(raw).slice(0, MAX_LIBRARY_TRACKS);
+    const result = { tracks, username: 'Liked Music' };
+    cache.set(cacheKey, result, 180);
+    return result;
+  } catch (err) {
+    if (/The playlist does not exist|Private playlist|Sign in to confirm/i.test(err.message)) {
+      return {
+        tracks: [],
+        username: 'YouTube Music',
+        unauthenticated: true,
+        error: 'Плейлист "Понравившиеся" доступен только после авторизации в аккаунте YouTube Music',
+      };
+    }
+    throw err;
+  }
 }
 
 function providerCookieString(patterns) {
@@ -3214,8 +3278,15 @@ app.post('/api/cookies/import', (req, res) => {
   });
 });
 
-app.get('/api/cookies/status', (req, res) => {
-  res.json(getCookieHealth());
+app.get('/api/cookies/status', async (req, res) => {
+  const health = getCookieHealth();
+  const ymLive = await checkYandexAuthStatus();
+  res.json({
+    ...health,
+    yandexSession: ymLive.authenticated,
+    yandexHasPlus: ymLive.hasPlus,
+    yandexUsername: ymLive.username,
+  });
 });
 
 app.listen(PORT, HOST, () => {
