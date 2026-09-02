@@ -2,9 +2,10 @@
   "name": "listenfold",
   "version": "0.1.0",
   "description": "Desktop music player for YouTube Music and Yandex Music",
-  "author": "Listenfold Contributors",
+  "author": "Listenfold Contributors <admin@lonestill.uk>",
   "license": "MIT",
   "private": true,
+  "desktopName": "listenfold.desktop",
   "main": "desktop/main.js",
   "scripts": {
     "start": "electron .",
@@ -23,10 +24,10 @@
     "pack:mac": "npm run release:prepare:mac && electron-builder --mac --dir",
     "pack:win": "npm run release:prepare:win && electron-builder --win --dir",
     "pack:linux": "npm run release:prepare:linux && electron-builder --linux --dir",
-    "dist": "npm run release:prepare && electron-builder",
-    "dist:mac": "npm run release:prepare:mac && electron-builder --mac",
-    "dist:win": "npm run release:prepare:win && electron-builder --win",
-    "dist:linux": "npm run release:prepare:linux && electron-builder --linux",
+    "dist": "npm run release:prepare && electron-builder --publish never",
+    "dist:mac": "npm run release:prepare:mac && electron-builder --mac --publish never",
+    "dist:win": "npm run release:prepare:win && electron-builder --win --publish never",
+    "dist:linux": "npm run release:prepare:linux && electron-builder --linux --publish never",
     "dist:all": "npm run dist:mac && npm run dist:win && npm run dist:linux"
   },
   "dependencies": {
@@ -44,6 +45,7 @@
     "appId": "app.listenfold.desktop",
     "productName": "Listenfold",
     "executableName": "listenfold",
+    "publish": null,
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist",
@@ -127,6 +129,8 @@
       "shortcutName": "Listenfold"
     },
     "linux": {
+      "maintainer": "Listenfold Contributors <admin@lonestill.uk>",
+      "syncDesktopName": true,
       "icon": "build/icons",
       "target": [
         {
