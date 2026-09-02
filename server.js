@@ -2825,54 +2825,152 @@ async function prepareYandexTrack(url) {
   return dlPromise;
 }
 
+const AUDIO_CONTAINER_EXTS = ['.m4a', '.webm', '.opus', '.mp3', '.ogg', '.mp4'];
+
+function findExistingAudioFile(basePath) {
+  for (const ext of AUDIO_CONTAINER_EXTS) {
+    const p = `${basePath}${ext}`;
+    try {
+      if (fs.existsSync(p) && fs.statSync(p).size > 10000) return p;
+    } catch {}
+  }
+  return null;
+}
+
 async function prepareYouTubeTrack(url) {
   const hash = crypto.createHash('md5').update(url).digest('hex');
   const baseFilePath = path.join(audioDir, hash);
 
-  for (const ext of ['.m4a', '.webm', '.opus', '.mp3', '.ogg']) {
-    const p = `${baseFilePath}${ext}`;
-    if (fs.existsSync(p) && fs.statSync(p).size > 10000) return p;
-  }
+  const existing = findExistingAudioFile(baseFilePath);
+  if (existing) return existing;
 
   if (activeDownloads.has(url)) return activeDownloads.get(url);
 
-  const promise = new Promise((resolve, reject) => {
-    const template = `${baseFilePath}.%(ext)s`;
-    const proc = spawn(ytdlpBinary, [
-      ...cookieArgs(),
-      '--extractor-args', 'youtube:player_client=android,ios,web',
-      '-f', 'ba/b',
-      '-o', template,
-      '--no-playlist', '--no-warnings', '--no-progress',
-      '--', url,
-    ], { windowsHide: true });
+  const promise = (async () => {
+    // 3 parallel extraction strategies (race: fastest valid stream wins)
+    const strategies = [
+      {
+        name: 'tv_creator',
+        args: ['--extractor-args', 'youtube:player_client=tv_embedded,web_creator', '-f', 'ba/b'],
+      },
+      {
+        name: 'android_ios',
+        args: ['--extractor-args', 'youtube:player_client=android,ios,web', '-f', 'ba/b'],
+      },
+      {
+        name: 'standard_dlp',
+        args: ['-f', 'ba/b'],
+      },
+    ];
 
-    let stderr = '';
-    const timer = setTimeout(() => {
-      try { process.platform === 'win32' ? proc.kill() : proc.kill('SIGKILL'); } catch {}
-      reject(new Error('Download timeout'));
-    }, 45000);
-    proc.stderr.on('data', d => (stderr += d.toString()));
-    proc.on('close', code => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        let msg = stderr.slice(0, 250) || `yt-dlp exit ${code}`;
-        if (/Sign in to confirm you(?:’|')re not a bot/i.test(msg) || /HTTP Error 403/i.test(msg)) {
-          msg = 'YouTube заблокировал доступ к аудио (проверка на бота/403). Требуется вход в YouTube Music в настройках приложения.';
+    return new Promise((resolve, reject) => {
+      const activeProcs = new Set();
+      const stratBases = [];
+      let finished = false;
+      let completed = 0;
+      const errors = [];
+
+      const cleanup = (winnerProc = null) => {
+        for (const p of activeProcs) {
+          if (p !== winnerProc) {
+            try { process.platform === 'win32' ? p.kill() : p.kill('SIGKILL'); } catch {}
+          }
         }
-        return reject(new Error(msg));
-      }
-      for (const ext of ['.m4a', '.webm', '.opus', '.mp3', '.ogg']) {
-        const p = `${baseFilePath}${ext}`;
-        if (fs.existsSync(p) && fs.statSync(p).size > 10000) return resolve(p);
-      }
-      reject(new Error('Audio file not found after YouTube download'));
+        activeProcs.clear();
+      };
+
+      const timer = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          cleanup();
+          reject(new Error('Время ожидания загрузки аудио истекло (все стратегии превысили таймаут)'));
+        }
+      }, 55000);
+
+      strategies.forEach((strat, index) => {
+        const stratBase = `${baseFilePath}_s${index}`;
+        stratBases.push(stratBase);
+        const template = `${stratBase}.%(ext)s`;
+
+        const proc = spawn(ytdlpBinary, [
+          ...cookieArgs(),
+          ...strat.args,
+          '-o', template,
+          '--no-playlist', '--no-warnings', '--no-progress',
+          '--', url,
+        ], { windowsHide: true });
+
+        activeProcs.add(proc);
+        let stderr = '';
+        proc.stderr?.on('data', d => (stderr += d.toString()));
+
+        proc.on('close', code => {
+          activeProcs.delete(proc);
+          completed++;
+
+          if (finished) {
+            const residual = findExistingAudioFile(stratBase);
+            if (residual) unlinkQuietly(residual);
+            return;
+          }
+
+          const downloaded = findExistingAudioFile(stratBase);
+          if (code === 0 && downloaded) {
+            finished = true;
+            clearTimeout(timer);
+            cleanup(proc);
+
+            const ext = path.extname(downloaded);
+            const finalPath = `${baseFilePath}${ext}`;
+            try {
+              fs.renameSync(downloaded, finalPath);
+              resolve(finalPath);
+            } catch {
+              resolve(downloaded);
+            }
+
+            // Cleanup any leftovers from other strategy files
+            stratBases.forEach(base => {
+              if (base !== stratBase) {
+                const residual = findExistingAudioFile(base);
+                if (residual) unlinkQuietly(residual);
+              }
+            });
+            return;
+          }
+
+          const errBrief = stderr.slice(0, 180).trim() || `exit ${code}`;
+          errors.push(`[${strat.name}]: ${errBrief}`);
+
+          if (completed >= strategies.length) {
+            finished = true;
+            clearTimeout(timer);
+            cleanup();
+
+            const hasBotBlock = errors.some(e => /bot|403|Sign in to confirm/i.test(e));
+            const msg = hasBotBlock
+              ? 'YouTube заблокировал скачивание на данном IP (проверка на бота/403). Авторизуйтесь в YouTube Music в настройках приложения.'
+              : `Не удалось загрузить аудио (${errors.join('; ')})`;
+            reject(new Error(msg));
+          }
+        });
+
+        proc.on('error', err => {
+          activeProcs.delete(proc);
+          completed++;
+          if (!finished) {
+            errors.push(`[${strat.name}]: ${err.message}`);
+            if (completed >= strategies.length) {
+              finished = true;
+              clearTimeout(timer);
+              cleanup();
+              reject(new Error(`Сбой процессов загрузки: ${errors.join('; ')}`));
+            }
+          }
+        });
+      });
     });
-    proc.on('error', err => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
+  })();
 
   activeDownloads.set(url, promise);
   promise.then(() => activeDownloads.delete(url), () => activeDownloads.delete(url));
