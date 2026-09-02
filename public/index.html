@@ -784,21 +784,6 @@
       </div>
       <div class="dock-flyout-list" id="dockQueueList"></div>
     </div>
-
-    <!-- Dock Equalizer Flyout Popover -->
-    <div class="dock-flyout dock-eq-flyout hidden" id="dockEqPopover">
-      <div class="dock-flyout-head">
-        <span>Эквалайзер & Звуковые эффекты</span>
-        <button class="icon-button" id="closeDockEqBtn">✕</button>
-      </div>
-      <div class="dock-eq-presets">
-        <button class="dock-eq-chip active" data-preset="flat">Обычный</button>
-        <button class="dock-eq-chip" data-preset="bass">Bass Boost</button>
-        <button class="dock-eq-chip" data-preset="vocal">Вокал</button>
-        <button class="dock-eq-chip" data-preset="rock">Рок</button>
-        <button class="dock-eq-chip" data-preset="treble">Высокие</button>
-      </div>
-    </div>
   </div>
 
   <!-- Lyrics drawer -->
@@ -1173,9 +1158,110 @@
     </div>
   </div>
 
+  <!-- Parametric Equalizer Modal -->
+  <div class="dialog-scrim hidden" id="eqModalScrim">
+    <div class="modal-dialog eq-modal" id="eqModal" role="dialog" aria-modal="true" aria-labelledby="eqPresetLabel">
+      <div class="eq-header">
+        <div class="eq-preset-picker">
+          <button class="eq-preset-btn" id="eqPresetBtn" type="button" aria-haspopup="true">
+            <span id="eqPresetLabel">Custom</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="eq-preset-dropdown hidden" id="eqPresetDropdown">
+            <button class="eq-preset-item" data-preset="flat">Flat</button>
+            <button class="eq-preset-item" data-preset="bass">Bass Boost</button>
+            <button class="eq-preset-item" data-preset="vocal">Vocal</button>
+            <button class="eq-preset-item" data-preset="rock">Rock</button>
+            <button class="eq-preset-item" data-preset="treble">Treble Boost</button>
+            <button class="eq-preset-item" data-preset="electronic">Electronic</button>
+            <button class="eq-preset-item" data-preset="acoustic">Acoustic</button>
+            <button class="eq-preset-item active" data-preset="custom">Custom</button>
+          </div>
+        </div>
+        <div class="eq-header-right">
+          <button class="icon-button eq-add-top-btn" id="eqAddBandTopBtn" title="Добавить полосу">+</button>
+          <button class="icon-button eq-close-modal-btn" id="closeEqModalBtn" title="Закрыть">✕</button>
+        </div>
+      </div>
+
+      <!-- Graph Container -->
+      <div class="eq-graph-area">
+        <div class="eq-y-axis">
+          <span>+21dB</span>
+          <span>+18dB</span>
+          <span>+15dB</span>
+          <span>+12dB</span>
+          <span>+9dB</span>
+          <span>+6dB</span>
+          <span>+3dB</span>
+          <span class="zero-db">0 dB</span>
+          <span>-3dB</span>
+          <span>-6dB</span>
+          <span>-9dB</span>
+          <span>-12dB</span>
+          <span>-15dB</span>
+          <span>-18dB</span>
+          <span>-21dB</span>
+        </div>
+        <div class="eq-canvas-wrapper" id="eqCanvasWrapper">
+          <canvas id="eqCanvas" width="600" height="260"></canvas>
+        </div>
+      </div>
+      <div class="eq-x-axis">
+        <span class="hz-label">Hz</span>
+        <span>50Hz</span>
+        <span>100Hz</span>
+        <span>200Hz</span>
+        <span>500Hz</span>
+        <span>1kHz</span>
+        <span>2kHz</span>
+        <span>5kHz</span>
+        <span>10kHz</span>
+        <span>20kHz</span>
+      </div>
+
+      <!-- Bottom Panel -->
+      <div class="eq-bottom-panel" id="eqBottomPanel">
+        <div class="eq-band-controls hidden" id="eqBandControls">
+          <div class="eq-band-meta">
+            <span class="eq-band-name" id="eqBandName">BAND 1</span>
+            <div class="eq-band-meta-right">
+              <span class="eq-band-stat" id="eqBandStat">130Hz / +9.9dB</span>
+              <button class="eq-band-remove-btn" id="eqBandRemoveBtn" title="Удалить эту полосу">✕</button>
+            </div>
+          </div>
+          <div class="eq-q-row">
+            <span class="eq-q-title">Q</span>
+            <input type="range" class="eq-q-slider" id="eqQSlider" min="0.1" max="10" step="0.05" value="1.00">
+            <span class="eq-q-readout" id="eqQReadout">1.00</span>
+          </div>
+          <div class="eq-type-group" id="eqTypeGroup">
+            <button class="eq-type-btn" data-type="lowshelf">Lowshelf</button>
+            <button class="eq-type-btn active" data-type="peaking">Peaking</button>
+            <button class="eq-type-btn" data-type="highshelf">Highshelf</button>
+          </div>
+        </div>
+        <div class="eq-hint-text" id="eqHintText">
+          Drag to move. Double-click to add a band. Scroll to adjust Q. Spectrum shown on background.
+        </div>
+      </div>
+
+      <!-- Footer Buttons -->
+      <div class="eq-footer">
+        <button class="eq-footer-add-btn" id="eqAddBandBtn" type="button">
+          <span>+ Add band</span>
+        </button>
+        <button class="eq-footer-reset-btn" id="eqResetBtn" type="button">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          <span>Reset</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification Container -->
   <div class="toast-stack" id="toastContainer"></div>
 
-  <script src="/js/app.js?v=20260902-14"></script>
+  <script src="/js/app.js?v=20260903-1"></script>
 </body>
 </html>

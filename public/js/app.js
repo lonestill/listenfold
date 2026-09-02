@@ -358,7 +358,7 @@ const dom = {
   toastContainer:     $('#toastContainer'),
 };
 
-// Audio engine & equalizer
+// Audio engine & parametric equalizer
 const audio = new Audio();
 audio.volume = state.volume;
 audio.preload = 'auto';
@@ -367,67 +367,180 @@ let audioCtx = null;
 let analyser = null;
 let dataArray = null;
 let animFrame = null;
-let bassFilter = null;
-let trebleFilter = null;
+let mediaSourceNode = null;
+let eqFilterNodes = [];
+
+const BAND_COLORS = ['#2dd4bf', '#60a5fa', '#c084fc', '#fb923c', '#4ade80', '#f472b6', '#38bdf8', '#fb7185', '#facc15'];
+
+const DEFAULT_EQ_BANDS = [
+  { id: 1, freq: 100, gain: 0, q: 1.0, type: 'lowshelf', color: '#2dd4bf' },
+  { id: 2, freq: 300, gain: 0, q: 1.0, type: 'peaking', color: '#60a5fa' },
+  { id: 3, freq: 1000, gain: 0, q: 1.0, type: 'peaking', color: '#c084fc' },
+  { id: 4, freq: 3000, gain: 0, q: 1.0, type: 'peaking', color: '#fb923c' },
+  { id: 5, freq: 7000, gain: 0, q: 1.0, type: 'peaking', color: '#4ade80' },
+  { id: 6, freq: 14000, gain: 0, q: 1.0, type: 'highshelf', color: '#f472b6' },
+];
+
+const EQ_PRESETS = {
+  flat: [
+    { freq: 100, gain: 0, q: 1.0, type: 'lowshelf' },
+    { freq: 300, gain: 0, q: 1.0, type: 'peaking' },
+    { freq: 1000, gain: 0, q: 1.0, type: 'peaking' },
+    { freq: 3000, gain: 0, q: 1.0, type: 'peaking' },
+    { freq: 7000, gain: 0, q: 1.0, type: 'peaking' },
+    { freq: 14000, gain: 0, q: 1.0, type: 'highshelf' },
+  ],
+  bass: [
+    { freq: 100, gain: 8.5, q: 0.9, type: 'lowshelf' },
+    { freq: 250, gain: 4.0, q: 1.0, type: 'peaking' },
+    { freq: 1000, gain: 0, q: 1.0, type: 'peaking' },
+    { freq: 3000, gain: 0.5, q: 1.0, type: 'peaking' },
+    { freq: 7000, gain: 1.5, q: 1.0, type: 'peaking' },
+    { freq: 14000, gain: 2.5, q: 1.0, type: 'highshelf' },
+  ],
+  vocal: [
+    { freq: 100, gain: -3.0, q: 1.0, type: 'lowshelf' },
+    { freq: 300, gain: 1.0, q: 1.0, type: 'peaking' },
+    { freq: 1200, gain: 4.5, q: 1.2, type: 'peaking' },
+    { freq: 3500, gain: 3.5, q: 1.1, type: 'peaking' },
+    { freq: 7000, gain: 1.0, q: 1.0, type: 'peaking' },
+    { freq: 14000, gain: 0, q: 1.0, type: 'highshelf' },
+  ],
+  rock: [
+    { freq: 100, gain: 5.5, q: 1.0, type: 'lowshelf' },
+    { freq: 300, gain: 2.0, q: 1.0, type: 'peaking' },
+    { freq: 1000, gain: -1.5, q: 1.0, type: 'peaking' },
+    { freq: 3000, gain: 2.5, q: 1.0, type: 'peaking' },
+    { freq: 7000, gain: 4.5, q: 1.0, type: 'peaking' },
+    { freq: 14000, gain: 5.5, q: 1.0, type: 'highshelf' },
+  ],
+  treble: [
+    { freq: 100, gain: -2.5, q: 1.0, type: 'lowshelf' },
+    { freq: 300, gain: 0, q: 1.0, type: 'peaking' },
+    { freq: 1000, gain: 1.0, q: 1.0, type: 'peaking' },
+    { freq: 3000, gain: 3.5, q: 1.0, type: 'peaking' },
+    { freq: 7000, gain: 6.5, q: 1.0, type: 'peaking' },
+    { freq: 14000, gain: 8.0, q: 1.0, type: 'highshelf' },
+  ],
+  electronic: [
+    { freq: 100, gain: 6.5, q: 0.9, type: 'lowshelf' },
+    { freq: 300, gain: 3.0, q: 1.0, type: 'peaking' },
+    { freq: 1000, gain: -2.0, q: 1.0, type: 'peaking' },
+    { freq: 3000, gain: 2.0, q: 1.0, type: 'peaking' },
+    { freq: 7000, gain: 4.0, q: 1.0, type: 'peaking' },
+    { freq: 14000, gain: 5.5, q: 1.0, type: 'highshelf' },
+  ],
+  acoustic: [
+    { freq: 100, gain: 3.0, q: 1.0, type: 'lowshelf' },
+    { freq: 300, gain: 1.5, q: 1.0, type: 'peaking' },
+    { freq: 1000, gain: 0.5, q: 1.0, type: 'peaking' },
+    { freq: 3000, gain: 2.0, q: 1.0, type: 'peaking' },
+    { freq: 7000, gain: 3.5, q: 1.0, type: 'peaking' },
+    { freq: 14000, gain: 3.0, q: 1.0, type: 'highshelf' },
+  ],
+};
+
+function loadStoredEqBands() {
+  try {
+    const raw = localStorage.getItem('lf_eq_bands');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((b, i) => ({
+          id: b.id || (i + 1),
+          freq: Math.max(20, Math.min(20000, Number(b.freq) || 1000)),
+          gain: Math.max(-21, Math.min(21, Number(b.gain) || 0)),
+          q: Math.max(0.1, Math.min(10, Number(b.q) || 1.0)),
+          type: ['lowshelf', 'peaking', 'highshelf'].includes(b.type) ? b.type : 'peaking',
+          color: b.color || BAND_COLORS[i % BAND_COLORS.length],
+        }));
+      }
+    }
+  } catch {}
+  return JSON.parse(JSON.stringify(DEFAULT_EQ_BANDS));
+}
+
+state.eqBands = loadStoredEqBands();
+state.eqPreset = localStorage.getItem('lf_eq_preset') || 'flat';
+state.selectedEqBand = -1;
 
 function initAudioContext() {
-  if (audioCtx) return;
+  if (audioCtx) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return;
+  }
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 64;
-    analyser.smoothingTimeConstant = 0.85;
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.82;
     dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-    bassFilter = audioCtx.createBiquadFilter();
-    bassFilter.type = 'lowshelf';
-    bassFilter.frequency.value = 250;
-    bassFilter.gain.value = 0;
-
-    trebleFilter = audioCtx.createBiquadFilter();
-    trebleFilter.type = 'highshelf';
-    trebleFilter.frequency.value = 3500;
-    trebleFilter.gain.value = 0;
-
-    const src = audioCtx.createMediaElementSource(audio);
-    src.connect(bassFilter);
-    bassFilter.connect(trebleFilter);
-    trebleFilter.connect(analyser);
-    analyser.connect(audioCtx.destination);
-    setEqPreset(state.eqPreset || state.settings?.defaultEq || 'flat', false);
+    mediaSourceNode = audioCtx.createMediaElementSource(audio);
+    rebuildEqAudioGraph();
   } catch (e) {
     console.warn('AudioContext init:', e.message);
   }
 }
 
+function rebuildEqAudioGraph() {
+  if (!audioCtx || !mediaSourceNode) return;
+
+  try { mediaSourceNode.disconnect(); } catch {}
+  for (const n of eqFilterNodes) {
+    try { n.disconnect(); } catch {}
+  }
+  eqFilterNodes = [];
+
+  let last = mediaSourceNode;
+  for (const band of state.eqBands) {
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = band.type || 'peaking';
+    filter.frequency.value = band.freq;
+    filter.gain.value = band.gain;
+    filter.Q.value = band.q || 1.0;
+    last.connect(filter);
+    last = filter;
+    eqFilterNodes.push(filter);
+  }
+
+  last.connect(analyser);
+  analyser.connect(audioCtx.destination);
+}
+
+function updateFilterNode(index) {
+  const band = state.eqBands[index];
+  const node = eqFilterNodes[index];
+  if (!band || !node || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  node.type = band.type;
+  node.frequency.setTargetAtTime(band.freq, t, 0.015);
+  node.gain.setTargetAtTime(band.gain, t, 0.015);
+  node.Q.setTargetAtTime(band.q || 1.0, t, 0.015);
+}
+
 function setEqPreset(preset, notify = true) {
   state.eqPreset = preset;
-  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-  if (bassFilter && trebleFilter) {
-    switch (preset) {
-      case 'bass':
-        bassFilter.gain.value = 9;
-        trebleFilter.gain.value = 1;
-        break;
-      case 'vocal':
-        bassFilter.gain.value = -3;
-        trebleFilter.gain.value = 5;
-        break;
-      case 'rock':
-        bassFilter.gain.value = 6;
-        trebleFilter.gain.value = 5;
-        break;
-      case 'treble':
-        bassFilter.gain.value = -4;
-        trebleFilter.gain.value = 8;
-        break;
-      default:
-        bassFilter.gain.value = 0;
-        trebleFilter.gain.value = 0;
-        break;
-    }
+  localStorage.setItem('lf_eq_preset', preset);
+
+  if (EQ_PRESETS[preset]) {
+    const pBands = EQ_PRESETS[preset];
+    state.eqBands = pBands.map((p, idx) => ({
+      id: idx + 1,
+      freq: p.freq,
+      gain: p.gain,
+      q: p.q || 1.0,
+      type: p.type || 'peaking',
+      color: BAND_COLORS[idx % BAND_COLORS.length],
+    }));
+    localStorage.setItem('lf_eq_bands', JSON.stringify(state.eqBands));
+    initAudioContext();
+    rebuildEqAudioGraph();
   }
-  $$('.dock-eq-chip').forEach(c => c.classList.toggle('active', c.dataset.preset === preset));
+
+  if (typeof updateEqPresetUI === 'function') updateEqPresetUI();
+  if (typeof updateEqBottomPanel === 'function') updateEqBottomPanel();
+  if (typeof drawEqCanvas === 'function') drawEqCanvas();
   if (notify) toast(`Эквалайзер: ${preset.toUpperCase()}`);
 }
 
@@ -3720,6 +3833,11 @@ function drawVisualizer() {
       }
     }
   }
+
+  const eqScrim = $('#eqModalScrim');
+  if (eqScrim && !eqScrim.classList.contains('hidden') && typeof drawEqCanvas === 'function') {
+    drawEqCanvas();
+  }
 }
 
 // Media Session
@@ -4498,23 +4616,532 @@ function initDockBarControls() {
     }
   }
 
-  // Equalizer popover
-  if (dom.dockEqBtn && dom.dockEqPopover) {
-    dom.dockEqBtn.onclick = e => {
-      e.stopPropagation();
-      initAudioContext();
-      dom.dockEqPopover.classList.toggle('hidden');
-      if (dom.dockTrackMenu) dom.dockTrackMenu.classList.add('hidden');
-      if (dom.dockQueuePopover) dom.dockQueuePopover.classList.add('hidden');
-    };
+  // Parametric Equalizer Module (Screenshot Accurate)
+  const MIN_FREQ = 20;
+  const MAX_FREQ = 20000;
+  const MIN_DB = -21;
+  const MAX_DB = 21;
+  const FREQ_POINTS = 256;
+  const sampleFreqs = new Float32Array(FREQ_POINTS);
+  for (let i = 0; i < FREQ_POINTS; i++) {
+    sampleFreqs[i] = MIN_FREQ * Math.pow(MAX_FREQ / MIN_FREQ, i / (FREQ_POINTS - 1));
+  }
 
-    if (dom.closeDockEqBtn) {
-      dom.closeDockEqBtn.onclick = () => dom.dockEqPopover.classList.add('hidden');
+  function hexToRgba(hex, alpha = 1) {
+    const c = String(hex || '#60a5fa').replace('#', '');
+    const r = parseInt(c.substring(0, 2), 16) || 0;
+    const g = parseInt(c.substring(2, 4), 16) || 0;
+    const b = parseInt(c.substring(4, 6), 16) || 0;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function freqToX(freq, width) {
+    const f = Math.max(MIN_FREQ, Math.min(MAX_FREQ, freq));
+    return (Math.log10(f / MIN_FREQ) / Math.log10(MAX_FREQ / MIN_FREQ)) * width;
+  }
+
+  function xToFreq(x, width) {
+    const pct = Math.max(0, Math.min(1, x / width));
+    return MIN_FREQ * Math.pow(MAX_FREQ / MIN_FREQ, pct);
+  }
+
+  function dbToY(db, height) {
+    const clamped = Math.max(MIN_DB, Math.min(MAX_DB, db));
+    return ((MAX_DB - clamped) / (MAX_DB - MIN_DB)) * height;
+  }
+
+  function yToDb(y, height) {
+    const pct = Math.max(0, Math.min(1, y / height));
+    return MAX_DB - pct * (MAX_DB - MIN_DB);
+  }
+
+  function formatHz(freq) {
+    if (freq >= 1000) {
+      const k = freq / 1000;
+      return `${k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)}kHz`;
+    }
+    return `${Math.round(freq)}Hz`;
+  }
+
+  function drawEqCanvas() {
+    const canvas = $('#eqCanvas');
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.floor(rect.width);
+    const h = Math.floor(rect.height);
+
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
     }
 
-    $$('.dock-eq-chip').forEach(btn => {
-      btn.onclick = () => setEqPreset(btn.dataset.preset);
+    const ctx = canvas.getContext('2d');
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    // Dark canvas background
+    ctx.fillStyle = '#0c0e13';
+    ctx.fillRect(0, 0, w, h);
+
+    // 1. Horizontal dB grid lines
+    for (let db = MIN_DB; db <= MAX_DB; db += 3) {
+      const y = dbToY(db, h);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      if (db === 0) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+        ctx.lineWidth = 1.2;
+      } else {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+        ctx.lineWidth = 1;
+      }
+      ctx.stroke();
+    }
+
+    // 2. Vertical frequency grid lines
+    const gridFreqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+    for (const f of gridFreqs) {
+      const x = freqToX(f, w);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // 3. Real-time background audio spectrum
+    if (analyser && state.isPlaying && dataArray) {
+      analyser.getByteFrequencyData(dataArray);
+      const nyquist = (audioCtx?.sampleRate || 44100) / 2;
+      const binCount = analyser.frequencyBinCount;
+
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+
+      let first = true;
+      for (let i = 0; i < FREQ_POINTS; i++) {
+        const f = sampleFreqs[i];
+        if (f > nyquist) break;
+        const bin = Math.min(binCount - 1, Math.floor((f / nyquist) * binCount));
+        const val = (dataArray[bin] || 0) / 255;
+        const x = freqToX(f, w);
+        const specY = h - (val * h * 0.65);
+
+        if (first) {
+          ctx.lineTo(x, specY);
+          first = false;
+        } else {
+          ctx.lineTo(x, specY);
+        }
+      }
+
+      ctx.lineTo(w, h);
+      ctx.closePath();
+
+      const grad = ctx.createLinearGradient(0, h * 0.35, 0, h);
+      grad.addColorStop(0, 'rgba(56, 189, 248, 0.16)');
+      grad.addColorStop(1, 'rgba(56, 189, 248, 0.01)');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(125, 211, 252, 0.32)';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+
+    // 4. Combined EQ response curve
+    const totalDb = new Float32Array(FREQ_POINTS);
+    if (eqFilterNodes.length > 0 && audioCtx) {
+      const mag = new Float32Array(FREQ_POINTS);
+      const phase = new Float32Array(FREQ_POINTS);
+      for (const node of eqFilterNodes) {
+        node.getFrequencyResponse(sampleFreqs, mag, phase);
+        for (let i = 0; i < FREQ_POINTS; i++) {
+          totalDb[i] += 20 * Math.log10(Math.max(1e-6, mag[i]));
+        }
+      }
+    }
+
+    ctx.beginPath();
+    for (let i = 0; i < FREQ_POINTS; i++) {
+      const x = (i / (FREQ_POINTS - 1)) * w;
+      const clampedDb = Math.max(MIN_DB, Math.min(MAX_DB, totalDb[i]));
+      const y = dbToY(clampedDb, h);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+
+    ctx.shadowColor = '#60a5fa';
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = '#7aa2f7';
+    ctx.lineWidth = 2.8;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // 5. Band Control Points
+    state.eqBands.forEach((band, idx) => {
+      const nx = freqToX(band.freq, w);
+      const ny = dbToY(band.gain, h);
+      const isSelected = idx === state.selectedEqBand;
+
+      if (isSelected) {
+        // Vertical dashed drop line to 0 dB
+        const yZero = dbToY(0, h);
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.moveTo(nx, ny);
+        ctx.lineTo(nx, yZero);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Outer glow halo
+        ctx.beginPath();
+        ctx.arc(nx, ny, 16, 0, Math.PI * 2);
+        ctx.fillStyle = hexToRgba(band.color || '#60a5fa', 0.28);
+        ctx.fill();
+      }
+
+      // Center Node
+      ctx.beginPath();
+      ctx.arc(nx, ny, 6.5, 0, Math.PI * 2);
+      ctx.fillStyle = band.color || '#60a5fa';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
     });
+
+    ctx.restore();
+  }
+
+  function updateEqBottomPanel() {
+    const controls = $('#eqBandControls');
+    const hint = $('#eqHintText');
+    const nameEl = $('#eqBandName');
+    const statEl = $('#eqBandStat');
+    const qSlider = $('#eqQSlider');
+    const qReadout = $('#eqQReadout');
+    const typeBtns = $$('#eqTypeGroup .eq-type-btn');
+
+    if (state.selectedEqBand >= 0 && state.eqBands[state.selectedEqBand]) {
+      const b = state.eqBands[state.selectedEqBand];
+      if (controls) controls.classList.remove('hidden');
+      if (hint) hint.classList.add('hidden');
+
+      if (nameEl) {
+        nameEl.textContent = `BAND ${state.selectedEqBand + 1}`;
+        nameEl.style.color = b.color || '#fff';
+      }
+      if (statEl) {
+        const sign = b.gain > 0 ? '+' : '';
+        statEl.textContent = `${formatHz(b.freq)} / ${sign}${b.gain.toFixed(1)}dB`;
+      }
+      if (qSlider) qSlider.value = b.q || 1.0;
+      if (qReadout) qReadout.textContent = (b.q || 1.0).toFixed(2);
+
+      typeBtns.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.type === b.type);
+      });
+    } else {
+      if (controls) controls.classList.add('hidden');
+      if (hint) hint.classList.remove('hidden');
+    }
+  }
+
+  function updateEqPresetUI() {
+    const label = $('#eqPresetLabel');
+    if (label) {
+      const p = state.eqPreset || 'custom';
+      const names = {
+        flat: 'Flat',
+        bass: 'Bass Boost',
+        vocal: 'Vocal',
+        rock: 'Rock',
+        treble: 'Treble Boost',
+        electronic: 'Electronic',
+        acoustic: 'Acoustic',
+        custom: 'Custom',
+      };
+      label.textContent = names[p] || (p.charAt(0).toUpperCase() + p.slice(1));
+    }
+
+    $$('.eq-preset-item').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.preset === state.eqPreset);
+    });
+  }
+
+  function addEqBand(freq = 1000, gain = 0) {
+    if (state.eqBands.length >= 12) {
+      toast('Максимальное количество полос: 12');
+      return;
+    }
+    const color = BAND_COLORS[state.eqBands.length % BAND_COLORS.length];
+    state.eqBands.push({
+      id: Date.now(),
+      freq: Math.max(20, Math.min(20000, freq)),
+      gain: Math.max(-21, Math.min(21, gain)),
+      q: 1.0,
+      type: 'peaking',
+      color,
+    });
+    state.selectedEqBand = state.eqBands.length - 1;
+    state.eqPreset = 'custom';
+    initAudioContext();
+    rebuildEqAudioGraph();
+    updateEqPresetUI();
+    updateEqBottomPanel();
+    drawEqCanvas();
+    localStorage.setItem('lf_eq_bands', JSON.stringify(state.eqBands));
+    localStorage.setItem('lf_eq_preset', state.eqPreset);
+  }
+
+  function removeEqBand(index) {
+    if (state.eqBands.length <= 1) {
+      toast('Нельзя удалить последнюю полосу');
+      return;
+    }
+    state.eqBands.splice(index, 1);
+    state.selectedEqBand = -1;
+    state.eqPreset = 'custom';
+    initAudioContext();
+    rebuildEqAudioGraph();
+    updateEqPresetUI();
+    updateEqBottomPanel();
+    drawEqCanvas();
+    localStorage.setItem('lf_eq_bands', JSON.stringify(state.eqBands));
+    localStorage.setItem('lf_eq_preset', state.eqPreset);
+  }
+
+  function openEqModal() {
+    initAudioContext();
+    const scrim = $('#eqModalScrim');
+    if (!scrim) return;
+    scrim.classList.remove('hidden');
+    updateEqPresetUI();
+    updateEqBottomPanel();
+    requestAnimationFrame(drawEqCanvas);
+  }
+
+  function closeEqModal() {
+    const scrim = $('#eqModalScrim');
+    if (scrim) scrim.classList.add('hidden');
+    const dropdown = $('#eqPresetDropdown');
+    if (dropdown) dropdown.classList.add('hidden');
+  }
+
+  // Setup Equalizer event handlers
+  if (dom.dockEqBtn) {
+    dom.dockEqBtn.onclick = (e) => {
+      e.stopPropagation();
+      openEqModal();
+    };
+  }
+
+  const closeEqModalBtn = $('#closeEqModalBtn');
+  if (closeEqModalBtn) closeEqModalBtn.onclick = closeEqModal;
+
+  const eqModalScrim = $('#eqModalScrim');
+  if (eqModalScrim) {
+    eqModalScrim.onclick = (e) => {
+      if (e.target === eqModalScrim) closeEqModal();
+    };
+  }
+
+  const eqPresetBtn = $('#eqPresetBtn');
+  const eqPresetDropdown = $('#eqPresetDropdown');
+  if (eqPresetBtn && eqPresetDropdown) {
+    eqPresetBtn.onclick = (e) => {
+      e.stopPropagation();
+      eqPresetDropdown.classList.toggle('hidden');
+    };
+    document.addEventListener('pointerdown', e => {
+      if (!eqPresetDropdown.contains(e.target) && e.target !== eqPresetBtn) {
+        eqPresetDropdown.classList.add('hidden');
+      }
+    });
+  }
+
+  $$('.eq-preset-item').forEach(btn => {
+    btn.onclick = () => {
+      const p = btn.dataset.preset;
+      setEqPreset(p);
+      if (eqPresetDropdown) eqPresetDropdown.classList.add('hidden');
+    };
+  });
+
+  const eqAddBandTopBtn = $('#eqAddBandTopBtn');
+  if (eqAddBandTopBtn) eqAddBandTopBtn.onclick = () => addEqBand(1000, 0);
+
+  const eqAddBandBtn = $('#eqAddBandBtn');
+  if (eqAddBandBtn) eqAddBandBtn.onclick = () => addEqBand(1000, 0);
+
+  const eqResetBtn = $('#eqResetBtn');
+  if (eqResetBtn) eqResetBtn.onclick = () => setEqPreset('flat');
+
+  const eqQSlider = $('#eqQSlider');
+  if (eqQSlider) {
+    eqQSlider.oninput = () => {
+      if (state.selectedEqBand >= 0 && state.eqBands[state.selectedEqBand]) {
+        const b = state.eqBands[state.selectedEqBand];
+        b.q = parseFloat(eqQSlider.value) || 1.0;
+        state.eqPreset = 'custom';
+        updateEqPresetUI();
+        updateFilterNode(state.selectedEqBand);
+        const qReadout = $('#eqQReadout');
+        if (qReadout) qReadout.textContent = b.q.toFixed(2);
+        drawEqCanvas();
+        localStorage.setItem('lf_eq_bands', JSON.stringify(state.eqBands));
+        localStorage.setItem('lf_eq_preset', state.eqPreset);
+      }
+    };
+  }
+
+  $$('#eqTypeGroup .eq-type-btn').forEach(btn => {
+    btn.onclick = () => {
+      if (state.selectedEqBand >= 0 && state.eqBands[state.selectedEqBand]) {
+        const b = state.eqBands[state.selectedEqBand];
+        b.type = btn.dataset.type;
+        state.eqPreset = 'custom';
+        updateEqPresetUI();
+        updateFilterNode(state.selectedEqBand);
+        updateEqBottomPanel();
+        drawEqCanvas();
+        localStorage.setItem('lf_eq_bands', JSON.stringify(state.eqBands));
+        localStorage.setItem('lf_eq_preset', state.eqPreset);
+      }
+    };
+  });
+
+  const eqBandRemoveBtn = $('#eqBandRemoveBtn');
+  if (eqBandRemoveBtn) {
+    eqBandRemoveBtn.onclick = () => {
+      if (state.selectedEqBand >= 0) removeEqBand(state.selectedEqBand);
+    };
+  }
+
+  // Setup canvas dragging & mouse wheel
+  const canvas = $('#eqCanvas');
+  if (canvas) {
+    let isDragging = false;
+    let draggedIdx = -1;
+
+    const getCoords = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, e.clientY - rect.top)),
+        w: rect.width,
+        h: rect.height,
+      };
+    };
+
+    canvas.addEventListener('pointerdown', e => {
+      const { x, y, w, h } = getCoords(e);
+      let hit = -1;
+      for (let i = 0; i < state.eqBands.length; i++) {
+        const b = state.eqBands[i];
+        const nx = freqToX(b.freq, w);
+        const ny = dbToY(b.gain, h);
+        if (Math.hypot(x - nx, y - ny) <= 20) {
+          hit = i;
+          break;
+        }
+      }
+
+      if (hit >= 0) {
+        state.selectedEqBand = hit;
+        isDragging = true;
+        draggedIdx = hit;
+        canvas.setPointerCapture(e.pointerId);
+        updateEqBottomPanel();
+        drawEqCanvas();
+      } else {
+        state.selectedEqBand = -1;
+        updateEqBottomPanel();
+        drawEqCanvas();
+      }
+    });
+
+    canvas.addEventListener('pointermove', e => {
+      const { x, y, w, h } = getCoords(e);
+      if (isDragging && draggedIdx >= 0) {
+        const b = state.eqBands[draggedIdx];
+        b.freq = Math.round(xToFreq(x, w));
+        b.gain = Math.round(yToDb(y, h) * 10) / 10;
+        state.eqPreset = 'custom';
+        updateEqPresetUI();
+        updateFilterNode(draggedIdx);
+        updateEqBottomPanel();
+        drawEqCanvas();
+        return;
+      }
+
+      let hover = false;
+      for (const b of state.eqBands) {
+        const nx = freqToX(b.freq, w);
+        const ny = dbToY(b.gain, h);
+        if (Math.hypot(x - nx, y - ny) <= 16) {
+          hover = true;
+          break;
+        }
+      }
+      canvas.style.cursor = hover ? 'crosshair' : 'default';
+    });
+
+    canvas.addEventListener('pointerup', e => {
+      if (isDragging) {
+        isDragging = false;
+        draggedIdx = -1;
+        try { canvas.releasePointerCapture(e.pointerId); } catch {}
+        localStorage.setItem('lf_eq_bands', JSON.stringify(state.eqBands));
+        localStorage.setItem('lf_eq_preset', state.eqPreset);
+      }
+    });
+
+    canvas.addEventListener('dblclick', e => {
+      const { x, y, w, h } = getCoords(e);
+      const freq = Math.round(xToFreq(x, w));
+      const gain = Math.round(yToDb(y, h) * 10) / 10;
+      addEqBand(freq, gain);
+    });
+
+    canvas.addEventListener('wheel', e => {
+      const { x, y, w, h } = getCoords(e);
+      let target = state.selectedEqBand;
+      for (let i = 0; i < state.eqBands.length; i++) {
+        const b = state.eqBands[i];
+        const nx = freqToX(b.freq, w);
+        const ny = dbToY(b.gain, h);
+        if (Math.hypot(x - nx, y - ny) <= 22) {
+          target = i;
+          state.selectedEqBand = i;
+          break;
+        }
+      }
+
+      if (target >= 0 && state.eqBands[target]) {
+        e.preventDefault();
+        const b = state.eqBands[target];
+        const delta = e.deltaY < 0 ? 0.05 : -0.05;
+        b.q = Math.round(Math.max(0.1, Math.min(10.0, (b.q || 1.0) + delta)) * 100) / 100;
+        state.eqPreset = 'custom';
+        updateEqPresetUI();
+        updateFilterNode(target);
+        updateEqBottomPanel();
+        drawEqCanvas();
+        localStorage.setItem('lf_eq_bands', JSON.stringify(state.eqBands));
+        localStorage.setItem('lf_eq_preset', state.eqPreset);
+      }
+    }, { passive: false });
   }
 
   // Volume mouse wheel
