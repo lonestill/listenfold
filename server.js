@@ -71,11 +71,15 @@ const COOKIE_DOMAINS = new Set([
   'm.youtube.com',
   'youtu.be',
   'google.com',
+  'accounts.google.com',
   'googlevideo.com',
   'yandex.ru',
+  'passport.yandex.ru',
+  'id.yandex.ru',
   'music.yandex.ru',
   'api.music.yandex.ru',
   'yandex.com',
+  'passport.yandex.com',
   'music.yandex.com',
   'api.music.yandex.com',
   'yandex.by',
@@ -142,23 +146,133 @@ const cache = {
   del(k) { this.store.delete(k); },
 };
 
-// Cookie export helper
-function exportChromeCookies() {
-  const tmpFile = `${cookieFile}.export-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  const browsers = ['chrome', 'edge', 'brave', 'chromium', 'firefox'];
-  let lastResult = { status: null, error: null };
+// Clear cached auth & library state
+function clearServiceCaches() {
+  for (const key of cache.store.keys()) {
+    if (key === 'ym_auth' || key.startsWith('lib:') || key.startsWith('playlist:') || key.startsWith('status:') || key.startsWith('wave:')) {
+      cache.del(key);
+    }
+  }
+}
 
-  for (const browser of browsers) {
+// Browser target discovery
+function getAvailableBrowserTargets() {
+  const targets = [];
+  const homedir = os.homedir();
+  const platform = process.platform;
+
+  // 1. Gecko-based browsers with custom profile directories (Zen, Floorp, LibreWolf, Waterfox)
+  const geckoProfiles = [
+    {
+      name: 'Zen Browser',
+      roots: platform === 'darwin'
+        ? [path.join(homedir, 'Library/Application Support/zen/Profiles')]
+        : platform === 'win32'
+          ? [path.join(process.env.APPDATA || '', 'zen/Profiles')]
+          : [path.join(homedir, '.zen'), path.join(homedir, '.var/app/app.zen_browser.zen/.zen')],
+    },
+    {
+      name: 'Floorp',
+      roots: platform === 'darwin'
+        ? [path.join(homedir, 'Library/Application Support/Floorp/Profiles')]
+        : platform === 'win32'
+          ? [path.join(process.env.APPDATA || '', 'Floorp/Profiles')]
+          : [path.join(homedir, '.floorp')],
+    },
+    {
+      name: 'LibreWolf',
+      roots: platform === 'darwin'
+        ? [path.join(homedir, 'Library/Application Support/librewolf/Profiles')]
+        : platform === 'win32'
+          ? [path.join(process.env.APPDATA || '', 'librewolf/Profiles')]
+          : [path.join(homedir, '.librewolf')],
+    },
+    {
+      name: 'Waterfox',
+      roots: platform === 'darwin'
+        ? [path.join(homedir, 'Library/Application Support/Waterfox/Profiles')]
+        : platform === 'win32'
+          ? [path.join(process.env.APPDATA || '', 'Waterfox/Profiles')]
+          : [path.join(homedir, '.waterfox')],
+    },
+    {
+      name: 'Mozilla Firefox',
+      roots: platform === 'linux'
+        ? [
+            path.join(homedir, '.mozilla/firefox'),
+            path.join(homedir, 'snap/firefox/common/.mozilla/firefox'),
+            path.join(homedir, '.var/app/org.mozilla.firefox/.mozilla/firefox'),
+          ]
+        : [],
+    },
+  ];
+
+  for (const { name, roots } of geckoProfiles) {
+    for (const root of roots) {
+      try {
+        if (!fs.existsSync(root)) continue;
+        const entries = fs.readdirSync(root, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const profileDir = path.join(root, entry.name);
+          const cookieDb = path.join(profileDir, 'cookies.sqlite');
+          if (fs.existsSync(cookieDb)) {
+            targets.push({ id: `firefox:${profileDir}`, name });
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 2. Standard browsers supported out-of-the-box by yt-dlp
+  const standardBrowsers = [
+    { id: 'chrome', name: 'Google Chrome' },
+    { id: 'firefox', name: 'Mozilla Firefox' },
+    { id: 'edge', name: 'Microsoft Edge' },
+    { id: 'brave', name: 'Brave' },
+    { id: 'opera', name: 'Opera' },
+    { id: 'opera_gx', name: 'Opera GX' },
+    { id: 'vivaldi', name: 'Vivaldi' },
+    { id: 'safari', name: 'Safari' },
+    { id: 'chromium', name: 'Chromium' },
+    { id: 'whale', name: 'Naver Whale' },
+  ];
+  targets.push(...standardBrowsers);
+
+  // 3. Yandex Browser (Chromium based)
+  const yandexUserData = platform === 'darwin'
+    ? path.join(homedir, 'Library/Application Support/Yandex/YandexBrowser')
+    : platform === 'win32'
+      ? path.join(process.env.LOCALAPPDATA || '', 'Yandex/YandexBrowser/User Data')
+      : path.join(homedir, '.config/yandex-browser');
+
+  try {
+    if (fs.existsSync(yandexUserData)) {
+      targets.push({ id: `chrome:${yandexUserData}`, name: 'Yandex Browser' });
+    }
+  } catch {}
+
+  return targets;
+}
+
+// Cookie export helper
+function exportBrowserCookies() {
+  const tmpFile = `${cookieFile}.export-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const targets = getAvailableBrowserTargets();
+  let lastResult = { status: null, error: null };
+  const probeUrls = ['https://music.youtube.com', 'https://music.yandex.ru'];
+
+  for (const { id: browserId, name: browserName } of targets) {
     let result;
     const previousUmask = process.umask(0o077);
     try {
       result = spawnSync(ytdlpBinary, [
-        '--cookies-from-browser', browser,
+        '--cookies-from-browser', browserId,
         '--cookies', tmpFile,
-        'https://music.youtube.com',
+        ...probeUrls,
         '--no-download', '--no-warnings', '--no-progress',
       ], {
-        timeout: 15000,
+        timeout: 20000,
         stdio: 'ignore',
         windowsHide: true,
       });
@@ -182,7 +296,9 @@ function exportChromeCookies() {
         const filtered = filteredCookieJar(fs.readFileSync(tmpFile, 'utf8'));
         if (filtered.count > 0) {
           atomicWritePrivate(cookieFile, filtered.contents);
-          return { ok: true, updated: true, code: null };
+          parseCookies();
+          clearServiceCaches();
+          return { ok: true, updated: true, browser: browserName, count: filtered.count, code: null };
         }
       } catch (err) {
         // Try next browser if filtered count empty
@@ -279,7 +395,7 @@ if (fs.existsSync(cookieFile)) {
     atomicWritePrivate(cookieFile, '# Netscape HTTP Cookie File\n');
   }
 }
-if (existingCookieCount <= 0 && process.env.LISTENFOLD_SKIP_COOKIE_IMPORT !== '1') exportChromeCookies();
+if (existingCookieCount <= 0 && process.env.LISTENFOLD_SKIP_COOKIE_IMPORT !== '1') exportBrowserCookies();
 parseCookies();
 
 // HTTP request helper
@@ -2215,6 +2331,16 @@ async function loadYouTubeLibrary() {
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
+  const health = getCookieHealth();
+  if (!health.youtubeSession) {
+    return {
+      tracks: [],
+      username: 'YouTube Music',
+      unauthenticated: true,
+      error: 'Требуется авторизация в YouTube Music для просмотра понравившихся треков',
+    };
+  }
+
   const raw = await ytdlp([
     ...cookieArgs(),
     '--extractor-args', 'youtube:player_client=web_music',
@@ -2714,6 +2840,7 @@ async function prepareYouTubeTrack(url) {
     const template = `${baseFilePath}.%(ext)s`;
     const proc = spawn(ytdlpBinary, [
       ...cookieArgs(),
+      '--extractor-args', 'youtube:player_client=android,ios,web',
       '-f', 'ba/b',
       '-o', template,
       '--no-playlist', '--no-warnings', '--no-progress',
@@ -2728,7 +2855,13 @@ async function prepareYouTubeTrack(url) {
     proc.stderr.on('data', d => (stderr += d.toString()));
     proc.on('close', code => {
       clearTimeout(timer);
-      if (code !== 0) return reject(new Error(stderr.slice(0, 200) || `yt-dlp exit ${code}`));
+      if (code !== 0) {
+        let msg = stderr.slice(0, 250) || `yt-dlp exit ${code}`;
+        if (/Sign in to confirm you(?:’|')re not a bot/i.test(msg) || /HTTP Error 403/i.test(msg)) {
+          msg = 'YouTube заблокировал доступ к аудио (проверка на бота/403). Требуется вход в YouTube Music в настройках приложения.';
+        }
+        return reject(new Error(msg));
+      }
       for (const ext of ['.m4a', '.webm', '.opus', '.mp3', '.ogg']) {
         const p = `${baseFilePath}${ext}`;
         if (fs.existsSync(p) && fs.statSync(p).size > 10000) return resolve(p);
@@ -2940,18 +3073,51 @@ app.get('/api/info', async (req, res) => {
 });
 
 app.post('/api/refresh-cookies', (req, res) => {
-  const outcome = exportChromeCookies();
+  const outcome = exportBrowserCookies();
   if (!outcome.ok) {
-    return res.status(502).json({ ok: false, error: 'Cookie export failed', code: outcome.code });
+    return res.status(502).json({
+      ok: false,
+      error: 'Не удалось автоматически найти cookies в браузерах. Попробуйте войти через аккаунт или вставить cookies вручную.',
+      code: outcome.code,
+    });
   }
 
-  parseCookies();
-  for (const key of cache.store.keys()) {
-    if (key === 'ym_auth' || key.startsWith('lib:') || key.startsWith('playlist:') || key.startsWith('status:')) {
-      cache.del(key);
-    }
+  res.json({
+    ok: true,
+    updated: outcome.updated,
+    browser: outcome.browser,
+    count: outcome.count,
+    cookies: getCookieHealth(),
+  });
+});
+
+app.post('/api/cookies/import', (req, res) => {
+  const text = req.body?.text || (typeof req.body === 'string' ? req.body : '');
+  if (!text || typeof text !== 'string') {
+    return res.status(400).json({ ok: false, error: 'Передан пустой текст cookies' });
   }
-  res.json({ ok: true, updated: outcome.updated, cookies: getCookieHealth() });
+
+  const filtered = filteredCookieJar(text);
+  if (filtered.count <= 0) {
+    return res.status(400).json({
+      ok: false,
+      error: 'В переданном тексте не найдены cookies для YouTube или Яндекс',
+    });
+  }
+
+  atomicWritePrivate(cookieFile, filtered.contents);
+  parseCookies();
+  clearServiceCaches();
+
+  res.json({
+    ok: true,
+    count: filtered.count,
+    cookies: getCookieHealth(),
+  });
+});
+
+app.get('/api/cookies/status', (req, res) => {
+  res.json(getCookieHealth());
 });
 
 app.listen(PORT, HOST, () => {

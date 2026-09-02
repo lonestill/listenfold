@@ -586,6 +586,105 @@ function installIpc() {
   });
   handle('desktop:open-external', openExternal);
   handle('desktop:app-version', () => app.getVersion());
+  handle('desktop:auth-login', service => openLoginWindow(service));
+}
+
+let loginWindow = null;
+function openLoginWindow(service) {
+  return new Promise(resolve => {
+    if (loginWindow && !loginWindow.isDestroyed()) {
+      loginWindow.focus();
+      return resolve({ ok: false, error: 'Login window already open' });
+    }
+
+    const isYandex = service === 'yandex';
+    const loginUrl = isYandex
+      ? 'https://passport.yandex.ru/auth?retpath=https%3A%2F%2Fmusic.yandex.ru'
+      : 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com';
+
+    loginWindow = new BrowserWindow({
+      width: 720,
+      height: 800,
+      parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
+      modal: false,
+      title: isYandex ? 'Вход в Яндекс Музыку' : 'Вход в YouTube Music',
+      autoHideMenuBar: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+
+    let finished = false;
+    const checkCookies = async () => {
+      if (finished || !loginWindow || loginWindow.isDestroyed()) return;
+      try {
+        const cookies = await loginWindow.webContents.session.cookies.get({});
+        const hasYandexAuth = isYandex && cookies.some(c =>
+          c.domain.includes('yandex') && (c.name === 'Session_id' || c.name === 'sessionid2' || c.name === 'yandex_login')
+        );
+        const hasYoutubeAuth = !isYandex && cookies.some(c =>
+          (c.domain.includes('youtube') || c.domain.includes('google')) && (c.name === 'SAPISID' || c.name === '__Secure-3PAPISID' || c.name === 'SID' || c.name === 'LOGIN_INFO')
+        );
+
+        if (hasYandexAuth || hasYoutubeAuth) {
+          finished = true;
+          const netscapeLines = ['# Netscape HTTP Cookie File'];
+          for (const c of cookies) {
+            if (!c.domain.includes('yandex') && !c.domain.includes('youtube') && !c.domain.includes('google')) continue;
+            const domain = c.domain.startsWith('.') ? c.domain : `.${c.domain}`;
+            const flag = 'TRUE';
+            const path = c.path || '/';
+            const secure = c.secure ? 'TRUE' : 'FALSE';
+            const expiry = c.expirationDate ? Math.floor(c.expirationDate) : 0;
+            netscapeLines.push(`${domain}\t${flag}\t${path}\t${secure}\t${expiry}\t${c.name}\t${c.value}`);
+          }
+          const cookieText = netscapeLines.join('\n') + '\n';
+
+          if (backendOrigin) {
+            try {
+              const url = new URL('/api/cookies/import', backendOrigin);
+              const postData = JSON.stringify({ text: cookieText });
+              const req = http.request(url, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(postData),
+                },
+              }, res => {
+                res.resume();
+                if (loginWindow && !loginWindow.isDestroyed()) loginWindow.close();
+                resolve({ ok: true, service });
+              });
+              req.on('error', () => {
+                if (loginWindow && !loginWindow.isDestroyed()) loginWindow.close();
+                resolve({ ok: true, service });
+              });
+              req.write(postData);
+              req.end();
+              return;
+            } catch {}
+          }
+
+          if (loginWindow && !loginWindow.isDestroyed()) loginWindow.close();
+          resolve({ ok: true, service });
+        }
+      } catch (err) {
+        console.error('Error checking login cookies:', err);
+      }
+    };
+
+    loginWindow.webContents.on('did-navigate', checkCookies);
+    loginWindow.webContents.on('did-navigate-in-page', checkCookies);
+    loginWindow.webContents.on('did-finish-load', checkCookies);
+
+    loginWindow.on('closed', () => {
+      loginWindow = null;
+      if (!finished) resolve({ ok: false, canceled: true });
+    });
+
+    void loginWindow.loadURL(loginUrl);
+  });
 }
 
 function getMediaIcon(name) {

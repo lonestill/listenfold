@@ -33,6 +33,9 @@ const desktop = Object.freeze({
   openExternal: url => invoke('desktop:open-external', url),
   getVersion: () => invoke('desktop:app-version'),
   onMediaCommand: callback => listen('desktop:media-command', callback),
+  auth: Object.freeze({
+    login: service => invoke('desktop:auth-login', service),
+  }),
 });
 
 contextBridge.exposeInMainWorld('desktop', desktop);

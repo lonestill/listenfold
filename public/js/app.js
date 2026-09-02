@@ -1104,8 +1104,12 @@ function renderFsQueue() {
 }
 
 // Playback engine
+let consecutivePlaybackFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = 3;
+
 async function playTrack(track, options = {}) {
   if (!track) return;
+  if (!options.isAutoNext) consecutivePlaybackFailures = 0;
 
   if (options.wave === true) state.waveActive = true;
   else if (state.currentView !== 'wave') state.waveActive = false;
@@ -1236,6 +1240,14 @@ function handlePlaybackFailure(token, attemptId, err) {
   state.isPlaying = false;
   session.failed = true;
   updatePlayBtn();
+
+  consecutivePlaybackFailures++;
+  if (consecutivePlaybackFailures >= MAX_CONSECUTIVE_FAILURES) {
+    consecutivePlaybackFailures = 0;
+    toast('Воспроизведение остановлено: несколько треков подряд недоступны. Проверьте сеть или авторизацию в настройках.');
+    return;
+  }
+
   toast(`Не удалось воспроизвести «${session.canonical.title}», переход...`);
   setTimeout(() => {
     if (session.token === playToken) playNext();
@@ -2635,10 +2647,34 @@ function setFsTab(tab) {
   }
 }
 
+function resetPlayerProgress(resumeTime = 0) {
+  const current = resumeTime > 0 ? resumeTime : 0;
+  const knownDur = Number(state.currentTrack?.duration) || 0;
+  const pct = (knownDur > 0 && current > 0) ? Math.min(100, (current / knownDur) * 100) : 0;
+  const val = pct * 10;
+
+  if (dom.progressBar) dom.progressBar.value = val;
+  if (dom.progressFill) dom.progressFill.style.width = `${pct}%`;
+  if (dom.currentTime) dom.currentTime.textContent = fmtTime(current);
+  if (dom.totalTime) dom.totalTime.textContent = knownDur > 0 ? fmtTime(knownDur) : '--:--';
+
+  if (dom.fsProgressBar) dom.fsProgressBar.value = val;
+  if (dom.fsProgressFill) dom.fsProgressFill.style.width = `${pct}%`;
+  if (dom.fsProgressDot) dom.fsProgressDot.style.left = `${pct}%`;
+  if (dom.fsCurrentTime) dom.fsCurrentTime.textContent = fmtTime(current);
+  if (dom.fsTotalTime) dom.fsTotalTime.textContent = knownDur > 0 ? fmtTime(knownDur) : '--:--';
+
+  if (dom.waveProgressBar) dom.waveProgressBar.value = val;
+  if (dom.waveCurrentTime) dom.waveCurrentTime.textContent = fmtTime(current);
+  if (dom.waveTotalTime) dom.waveTotalTime.textContent = knownDur > 0 ? fmtTime(knownDur) : '--:--';
+}
+
 // UI state
 function updatePlayerUI() {
   const t = state.currentTrack;
   if (!t) return;
+
+  resetPlayerProgress(playbackSession?.resumeTime || 0);
 
   const displayThumb = upgradeThumb(t.thumbnail) || t.thumbnail;
 
@@ -3194,6 +3230,24 @@ async function loadLibrary(source, title, subtitle) {
     const data = await responseJson(res, `Ошибка синхронизации ${title}`);
 
     const tracks = data.tracks || [];
+
+    if (data.unauthenticated) {
+      dom.trackList.innerHTML = `
+        <div class="loader-view" style="padding: 40px 20px; text-align: center; max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="font-size: 15px; font-weight: 550; color: #fff;">Требуется вход в ${source === 'yandex' ? 'Яндекс Музыку' : 'YouTube Music'}</div>
+          <div style="font-size: 12.5px; color: var(--text-muted); line-height: 1.45;">Для просмотра и синхронизации понравившихся треков выполните вход в аккаунт через настройки плеера.</div>
+          <button class="sp-action-btn" id="libraryOpenAuthBtn" style="margin-top: 6px; padding: 7px 16px; font-size: 12px; background: rgba(255,255,255,0.08); color: #fff;">Настройки авторизации</button>
+        </div>
+      `;
+      const authBtn = $('#libraryOpenAuthBtn');
+      if (authBtn) {
+        authBtn.onclick = () => {
+          if (dom.settingsBtn) dom.settingsBtn.click();
+        };
+      }
+      return [];
+    }
+
     const username = data.username || '';
     const fullTitle = username ? `${title} (${username})` : title;
     const isYm = source === 'yandex';
@@ -4104,6 +4158,7 @@ audio.addEventListener('ended', () => {
 });
 
 audio.addEventListener('play', () => {
+  consecutivePlaybackFailures = 0;
   state.isPlaying = true;
   updatePlayBtn();
   if (audioCtx?.state === 'suspended') audioCtx.resume();
@@ -4565,6 +4620,43 @@ function initSettings() {
     if (state.currentTrack) updatePlayerUI();
   };
 
+  const updateAuthStatusUI = async () => {
+    try {
+      const res = await fetch('/api/cookies/status');
+      const data = await res.json();
+      if (!data) return;
+
+      const spYmDot = $('#spYmDot');
+      const spYmState = $('#spYmState');
+      const spYtDot = $('#spYtDot');
+      const spYtState = $('#spYtState');
+
+      if (spYmDot && spYmState) {
+        if (data.yandexSession) {
+          spYmDot.className = 'status-dot active';
+          spYmState.textContent = 'Вход выполнен (Плюс)';
+          spYmState.style.color = '#34d399';
+        } else {
+          spYmDot.className = 'status-dot';
+          spYmState.textContent = 'Не авторизован (превью 30с)';
+          spYmState.style.color = 'var(--text-muted)';
+        }
+      }
+
+      if (spYtDot && spYtState) {
+        if (data.youtubeSession) {
+          spYtDot.className = 'status-dot active';
+          spYtState.textContent = 'Вход выполнен';
+          spYtState.style.color = '#34d399';
+        } else {
+          spYtDot.className = 'status-dot';
+          spYtState.textContent = 'Не авторизован (риск 403)';
+          spYtState.style.color = 'var(--text-muted)';
+        }
+      }
+    } catch {}
+  };
+
   // Toggle Settings Popover
   const toggleSettings = (e) => {
     if (e) e.stopPropagation();
@@ -4572,6 +4664,7 @@ function initSettings() {
     const isHidden = dom.settingsPopover.classList.contains('hidden');
     if (isHidden) {
       dom.settingsPopover.classList.remove('hidden');
+      updateAuthStatusUI();
     } else {
       dom.settingsPopover.classList.add('hidden');
     }
@@ -4667,15 +4760,109 @@ function initSettings() {
     };
   });
 
+  const spLoginYmBtn = $('#spLoginYmBtn');
+  const spLoginYtBtn = $('#spLoginYtBtn');
   const setRefreshBtn = $('#setRefreshCookiesBtn');
+  const setPasteCookiesBtn = $('#setPasteCookiesBtn');
+
+  const cookieModalScrim = $('#cookieModalScrim');
+  const closeCookieModalBtn = $('#closeCookieModalBtn');
+  const cancelCookieModalBtn = $('#cancelCookieModalBtn');
+  const saveCookieModalBtn = $('#saveCookieModalBtn');
+  const cookieTextarea = $('#cookieTextarea');
+
+  if (spLoginYmBtn) {
+    spLoginYmBtn.onclick = async () => {
+      if (window.desktop?.auth?.login) {
+        toast('Открываю окно входа Яндекс...');
+        try {
+          const res = await window.desktop.auth.login('yandex');
+          if (res?.ok) {
+            toast('Вход в Яндекс Музыку выполнен!');
+            await updateAuthStatusUI();
+            loadRuntimeStatus();
+          }
+        } catch (err) {
+          toast(err.message || 'Ошибка авторизации');
+        }
+      }
+    };
+  }
+
+  if (spLoginYtBtn) {
+    spLoginYtBtn.onclick = async () => {
+      if (window.desktop?.auth?.login) {
+        toast('Открываю окно входа Google / YouTube...');
+        try {
+          const res = await window.desktop.auth.login('youtube');
+          if (res?.ok) {
+            toast('Вход в YouTube Music выполнен!');
+            await updateAuthStatusUI();
+            loadRuntimeStatus();
+          }
+        } catch (err) {
+          toast(err.message || 'Ошибка авторизации');
+        }
+      }
+    };
+  }
+
   if (setRefreshBtn) {
     setRefreshBtn.onclick = async () => {
-      toast('Импорт cookies из Google Chrome...');
+      toast('Поиск cookies в браузерах (Zen, Chrome, Edge, Firefox, Brave, Opera)...');
       try {
-        await refreshAuthCookies();
-        toast('Cookies обновлены');
+        const data = await refreshAuthCookies();
+        toast(`Cookies импортированы (${data.browser || 'браузер'}: ${data.count || 0} шт.)`);
+        await updateAuthStatusUI();
       } catch (err) {
         toast(err.message || 'Ошибка импорта cookies');
+      }
+    };
+  }
+
+  if (setPasteCookiesBtn && cookieModalScrim) {
+    setPasteCookiesBtn.onclick = () => {
+      cookieModalScrim.classList.remove('hidden');
+      if (cookieTextarea) {
+        cookieTextarea.value = '';
+        cookieTextarea.focus();
+      }
+    };
+  }
+
+  const hideCookieModal = () => {
+    if (cookieModalScrim) cookieModalScrim.classList.add('hidden');
+  };
+
+  if (closeCookieModalBtn) closeCookieModalBtn.onclick = hideCookieModal;
+  if (cancelCookieModalBtn) cancelCookieModalBtn.onclick = hideCookieModal;
+  if (cookieModalScrim) {
+    cookieModalScrim.onclick = e => {
+      if (e.target === cookieModalScrim) hideCookieModal();
+    };
+  }
+
+  if (saveCookieModalBtn && cookieTextarea) {
+    saveCookieModalBtn.onclick = async () => {
+      const text = cookieTextarea.value.trim();
+      if (!text) {
+        toast('Вставьте текст cookies');
+        return;
+      }
+      try {
+        const res = await fetch('/api/cookies/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Ошибка импорта');
+        hideCookieModal();
+        toast(`Успешно сохранено ${data.count} cookies!`);
+        await updateAuthStatusUI();
+        loadRuntimeStatus();
+      } catch (err) {
+        toast(err.message || 'Не удалось сохранить cookies');
       }
     };
   }

@@ -1033,6 +1033,42 @@
     </div>
 
     <div class="sp-section">
+      <span class="sp-section-title">Аккаунты и авторизация</span>
+      <div class="sp-account-card">
+        <div class="sp-account-row">
+          <div class="sp-account-info">
+            <span class="status-dot" id="spYmDot"></span>
+            <div>
+              <div class="sp-account-name">Яндекс Музыка</div>
+              <div class="sp-account-state" id="spYmState">Проверка...</div>
+            </div>
+          </div>
+          <button class="sp-account-login-btn desktop-only" id="spLoginYmBtn">Войти</button>
+        </div>
+        <div class="sp-account-row">
+          <div class="sp-account-info">
+            <span class="status-dot" id="spYtDot"></span>
+            <div>
+              <div class="sp-account-name">YouTube Music</div>
+              <div class="sp-account-state" id="spYtState">Проверка...</div>
+            </div>
+          </div>
+          <button class="sp-account-login-btn desktop-only" id="spLoginYtBtn">Войти</button>
+        </div>
+      </div>
+      <div class="sp-account-actions">
+        <button class="sp-action-btn" id="setRefreshCookiesBtn" title="Поиск cookies в Zen, Chrome, Firefox, Edge, Brave, Opera, Safari">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+          <span>Импорт из браузеров</span>
+        </button>
+        <button class="sp-action-btn" id="setPasteCookiesBtn" title="Вставить cookies в формате Netscape">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>
+          <span>Вставить вручную</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="sp-section">
       <span class="sp-section-title">Текст</span>
       <div class="sp-row">
         <div class="sp-row-left">
@@ -1108,10 +1144,6 @@
     </div>
 
     <div class="sp-footer">
-      <button class="sp-footer-btn" id="setRefreshCookiesBtn">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
-        <span>Обновить вход</span>
-      </button>
       <button class="sp-footer-btn" id="setShortcutsBtn">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/></svg>
         <span>Клавиши</span>
@@ -1120,6 +1152,24 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         <span>Очистить историю</span>
       </button>
+    </div>
+  </div>
+
+  <!-- Cookie Paste Modal -->
+  <div class="dialog-scrim hidden" id="cookieModalScrim">
+    <div class="modal-dialog cookie-dialog" id="cookieModalDialog" role="dialog" aria-modal="true">
+      <div class="modal-dialog-header">
+        <div class="modal-dialog-title">Импорт cookies вручную</div>
+        <button class="icon-button" id="closeCookieModalBtn">✕</button>
+      </div>
+      <div class="cookie-dialog-body">
+        <p class="cookie-dialog-tip">Вставьте cookies (формат Netscape HTTP Cookie File), например экспортированные через расширение <em>Get cookies.txt LOCALLY</em>:</p>
+        <textarea class="cookie-textarea" id="cookieTextarea" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com&#9;TRUE&#9;/&#9;TRUE&#9;..."></textarea>
+      </div>
+      <div class="modal-dialog-footer">
+        <button class="button-secondary" id="cancelCookieModalBtn">Отмена</button>
+        <button class="button-primary" id="saveCookieModalBtn">Сохранить</button>
+      </div>
     </div>
   </div>
 
