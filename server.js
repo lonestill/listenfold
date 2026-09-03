@@ -2919,9 +2919,9 @@ async function prepareYouTubeTrack(url) {
         args: ['--extractor-args', 'youtube:player_client=visionos;player_skip=webpage,configs', '-f', 'bestaudio[ext=webm]/bestaudio/ba/b'],
       },
       {
-        name: 'tv_creator_nocookies',
+        name: 'web_creator_nocookies',
         useCookies: false,
-        args: ['--extractor-args', 'youtube:player_client=tv_embedded,web_creator', '-f', 'ba/b'],
+        args: ['--extractor-args', 'youtube:player_client=web_creator', '-f', 'ba/b'],
       },
       {
         name: 'tv_web_cookies',
@@ -3135,6 +3135,35 @@ app.get('/api/audio', async (req, res) => {
     console.error('Audio streaming error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/audio/prefetch', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'URL required' });
+
+  let safeUrl;
+  try { safeUrl = playbackUrl(url); } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const yandexSource = isYandexUrl(safeUrl) || /^ym-\d+$/.test(safeUrl);
+  const hash = crypto.createHash('md5').update(safeUrl).digest('hex');
+  const baseFilePath = path.join(audioDir, hash);
+  const existing = yandexSource
+    ? (fs.existsSync(`${baseFilePath}.mp3`) && fs.statSync(`${baseFilePath}.mp3`).size > 10000 ? `${baseFilePath}.mp3` : null)
+    : findExistingAudioFile(baseFilePath);
+
+  if (existing) {
+    return res.json({ ok: true, cached: true });
+  }
+
+  // Non-blocking background prepare
+  const prepareFn = yandexSource ? prepareYandexTrack : prepareYouTubeTrack;
+  prepareFn(safeUrl).catch(err => {
+    console.debug(`[prefetch] failed for ${safeUrl}:`, err.message);
+  });
+
+  res.json({ ok: true, started: true });
 });
 
 app.get('/api/status', async (req, res) => {

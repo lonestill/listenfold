@@ -925,7 +925,7 @@ function renderTrackTable(tracks, container, isQueue = false) {
       <div class="table-row ${isCurrent ? 'active-row' : ''} ${isCurrent && state.isPlaying ? 'playing-row' : ''}" role="button" tabindex="0"
         aria-label="${esc(`Воспроизвести ${track.title} — ${track.artist}`)}"
         aria-current="${isCurrent ? 'true' : 'false'}"
-        data-index="${i}" data-track-id="${esc(trackKey(track))}">
+        data-index="${i}" data-track-id="${esc(trackKey(track))}" data-track-url="${esc(track.url || '')}">
         <div class="row-index">
           <span class="row-index-num">${i + 1}</span>
           <div class="row-eq">
@@ -1155,7 +1155,7 @@ function renderSidebarQueue() {
     return;
   }
   dom.queuePreviewList.innerHTML = upcoming.map((t, i) => `
-    <div class="sq-item" data-offset="${i + 1}">
+    <div class="sq-item" data-offset="${i + 1}" data-track-url="${esc(t.url || '')}">
       <img src="${t.thumbnail || PLACEHOLDER_IMG}" alt="" onerror="this.src='${PLACEHOLDER_IMG}'">
       <div class="sq-meta">
         <div class="sq-title">${esc(t.title)}</div>
@@ -1194,7 +1194,7 @@ function renderFsQueue() {
   }
 
   dom.fsQueueList.innerHTML = upcoming.map((t, i) => `
-    <div class="fsq-row" data-offset="${i + 1}">
+    <div class="fsq-row" data-offset="${i + 1}" data-track-url="${esc(t.url || '')}">
       <img src="${t.thumbnail || PLACEHOLDER_IMG}" alt="" onerror="this.src='${PLACEHOLDER_IMG}'">
       <div class="fsq-info">
         <div class="fsq-name">${esc(t.title)}</div>
@@ -1253,6 +1253,7 @@ async function playTrack(track, options = {}) {
   state.needsSessionRestore = false;
   state.restoredTime = playbackSession.resumeTime;
   state.karaokeLoopIndex = state.karaokeLoop ? state.activeLrcIdx : -1;
+  state.nextTrackPrefetched = false;
   initAudioContext();
   fetchLyrics(canonical);
   persistSession();
@@ -1310,6 +1311,7 @@ async function attemptPlayback(session, variantIndex) {
     }
     updateMediaSession();
     startVisualizer();
+    prefetchNextTrack();
   } catch (err) {
     if (err.name === 'AbortError') return;
     handlePlaybackFailure(session.token, attemptId, err);
@@ -4217,6 +4219,37 @@ dom.volumeBtn.addEventListener('click', () => {
   updateVolumeUI();
 });
 
+// Smart Background Prefetch Engine (Queue + SoundCloud-style hover)
+const prefetchedUrls = new Set();
+let hoverPrefetchTimer = null;
+
+function prefetchNextTrack() {
+  if (state.currentIndex >= 0 && state.currentIndex + 1 < state.queue.length) {
+    const next = state.queue[state.currentIndex + 1];
+    const url = next?.url || next?.uri;
+    if (url && !prefetchedUrls.has(url)) {
+      prefetchedUrls.add(url);
+      fetch(`/api/audio/prefetch?url=${encodeURIComponent(url)}`).catch(() => {});
+    }
+  }
+}
+
+document.addEventListener('mouseover', (e) => {
+  const target = e.target.closest('[data-track-url]');
+  if (!target) {
+    if (hoverPrefetchTimer) { clearTimeout(hoverPrefetchTimer); hoverPrefetchTimer = null; }
+    return;
+  }
+  const url = target.dataset?.trackUrl;
+  if (!url || prefetchedUrls.has(url)) return;
+
+  if (hoverPrefetchTimer) clearTimeout(hoverPrefetchTimer);
+  hoverPrefetchTimer = setTimeout(() => {
+    prefetchedUrls.add(url);
+    fetch(`/api/audio/prefetch?url=${encodeURIComponent(url)}`).catch(() => {});
+  }, 200);
+}, { passive: true });
+
 // Audio Events
 audio.addEventListener('timeupdate', () => {
   if (playbackSession && Number.isFinite(audio.currentTime)) playbackSession.resumeTime = audio.currentTime;
@@ -4227,6 +4260,12 @@ audio.addEventListener('timeupdate', () => {
   }
   if (enforceKaraokeLoop(audio.currentTime)) return;
   if (!audio.duration || !isFinite(audio.duration) || isSeeking) return;
+
+  // Auto-prefetch next track when 25s remain
+  if (audio.currentTime > 0 && (audio.duration - audio.currentTime <= 25) && !state.nextTrackPrefetched) {
+    state.nextTrackPrefetched = true;
+    prefetchNextTrack();
+  }
   const pct = audio.currentTime / audio.duration;
   const val = pct * 1000;
 
@@ -4407,7 +4446,7 @@ function renderHomeRecent() {
   }
   dom.hubRecentSection.classList.remove('hidden');
   dom.hubRecentGrid.innerHTML = recent.map((t, i) => `
-    <div class="hub-track-card" data-idx="${i}">
+    <div class="hub-track-card" data-idx="${i}" data-track-url="${esc(t.url || '')}">
       <div class="hub-track-art-wrap">
         <img class="hub-track-art" src="${t.thumbnail || PLACEHOLDER_IMG}" alt="" loading="lazy" onerror="this.src='${PLACEHOLDER_IMG}'">
         <button class="hub-track-play" title="Слушать">
