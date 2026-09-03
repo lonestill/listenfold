@@ -53,6 +53,7 @@ const audioDir = path.join(cacheDir, 'audio');
 const playlistCacheDir = path.join(cacheDir, 'playlists');
 const updatesDir = path.join(cacheDir, 'updates');
 const cookieFile = path.join(cacheDir, 'cookies.txt');
+const ytdlpBinary = String(process.env.YTDLP_PATH || 'yt-dlp').trim() || 'yt-dlp';
 function getAppVersion() {
   if (process.env.LISTENFOLD_APP_VERSION) {
     return process.env.LISTENFOLD_APP_VERSION;
