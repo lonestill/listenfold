@@ -70,6 +70,7 @@ const state = {
   // Offline storage
   offlineTracks: [],
   offlineUrls: new Set(),
+  downloadingUrls: new Set(),
 };
 
 // Concurrency & Playback Safety
@@ -122,6 +123,11 @@ const dom = {
   heroShuffleBtn:     $('#heroShuffleBtn'),
   heroQueueAllBtn:    $('#heroQueueAllBtn'),
   heroDownloadAllBtn: $('#heroDownloadAllBtn'),
+  heroDownloadProgress: $('#heroDownloadProgress'),
+  hdpText:             $('#hdpText'),
+  hdpCount:            $('#hdpCount'),
+  hdpCurrentTrack:     $('#hdpCurrentTrack'),
+  hdpProgressFill:     $('#hdpProgressFill'),
   heroOpenLinkBtn:    $('#heroOpenLinkBtn'),
   heroFilterInput:    $('#heroFilterInput'),
   searchResults:      $('#searchResults'),
@@ -923,13 +929,14 @@ function renderTrackTable(tracks, container, isQueue = false) {
     const isCurrent = trackKey(state.currentTrack) === trackKey(track);
     const isLiked = state.liked.some(t => trackKey(t) === trackKey(track));
     const isOffline = state.offlineUrls.has(track.url) || state.offlineTracks.some(t => trackKey(t) === trackKey(track));
+    const isDownloading = state.downloadingUrls.has(track.url);
     const activeVariantIndex = isCurrent && Number.isInteger(state.currentTrack?.activeVariantIndex)
       ? state.currentTrack.activeVariantIndex
       : getSelectedVariantIndex(track);
     const typeLabel = versionLabel(track.versionType);
 
     return `
-      <div class="table-row ${isCurrent ? 'active-row' : ''} ${isCurrent && state.isPlaying ? 'playing-row' : ''}" role="button" tabindex="0"
+      <div class="table-row ${isCurrent ? 'active-row' : ''} ${isCurrent && state.isPlaying ? 'playing-row' : ''} ${isDownloading ? 'is-downloading' : ''}" role="button" tabindex="0"
         aria-label="${esc(`Воспроизвести ${track.title} — ${track.artist}`)}"
         aria-current="${isCurrent ? 'true' : 'false'}"
         data-index="${i}" data-track-id="${esc(trackKey(track))}" data-track-url="${esc(track.url || '')}">
@@ -960,8 +967,10 @@ function renderTrackTable(tracks, container, isQueue = false) {
         <div class="row-duration">${fmtTime(track.duration)}</div>
 
         <div class="row-actions">
-          <button class="action-icon-btn offline-track-btn ${isOffline ? 'is-offline' : ''}" title="${isOffline ? 'Сохранено оффлайн (нажмите для удаления)' : 'Скачать для оффлайн прослушивания'}" data-idx="${i}">
-            ${isOffline
+          <button class="action-icon-btn offline-track-btn ${isOffline ? 'is-offline' : ''} ${isDownloading ? 'is-downloading' : ''}" title="${isDownloading ? 'Скачивается...' : isOffline ? 'Сохранено оффлайн (нажмите для удаления)' : 'Скачать для оффлайн прослушивания'}" data-idx="${i}">
+            ${isDownloading
+              ? '<span class="spinner-tiny"></span>'
+              : isOffline
               ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>'
               : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
             }
@@ -3263,8 +3272,13 @@ async function toggleTrackOffline(track, btn) {
     }
   } else {
     btn.disabled = true;
-    btn.innerHTML = `<div class="spinner-tiny"></div>`;
-    toast(`Скачивание для оффлайн: ${track.title}...`);
+    state.downloadingUrls.add(track.url);
+    const row = btn.closest('.table-row');
+    if (row) row.classList.add('is-downloading');
+    btn.classList.add('is-downloading');
+    btn.innerHTML = `<span class="spinner-tiny"></span>`;
+    btn.title = 'Скачивается...';
+    toast(`Скачивание: ${track.title}...`);
     try {
       const res = await fetch('/api/offline/save', {
         method: 'POST',
@@ -3280,14 +3294,18 @@ async function toggleTrackOffline(track, btn) {
       else state.offlineTracks.unshift(data.track);
 
       updateOfflineBadge();
+      btn.classList.remove('is-downloading');
       btn.classList.add('is-offline');
       btn.title = 'Сохранено оффлайн (нажмите, чтобы удалить)';
       btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`;
-      toast(`Трек "${track.title}" доступен оффлайн!`);
+      toast(`Трек "${track.title}" сохранён оффлайн!`);
     } catch (err) {
+      btn.classList.remove('is-downloading');
       btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
       toast(`Не удалось скачать трек: ${err.message}`);
     } finally {
+      state.downloadingUrls.delete(track.url);
+      if (row) row.classList.remove('is-downloading');
       btn.disabled = false;
     }
   }
@@ -3448,6 +3466,7 @@ function setupCollectionHeader(options) {
   if (dom.heroDownloadAllBtn) {
     if (type === 'offline') {
       dom.heroDownloadAllBtn.classList.add('hidden');
+      if (dom.heroDownloadProgress) dom.heroDownloadProgress.classList.add('hidden');
     } else {
       dom.heroDownloadAllBtn.classList.remove('hidden');
       dom.heroDownloadAllBtn.onclick = async () => {
@@ -3458,11 +3477,40 @@ function setupCollectionHeader(options) {
           return;
         }
 
+        const originalBtnHtml = dom.heroDownloadAllBtn.innerHTML;
         dom.heroDownloadAllBtn.disabled = true;
-        toast(`Скачивание ${notDownloaded.length} треков для оффлайн...`);
+
+        if (dom.heroDownloadProgress) {
+          dom.heroDownloadProgress.classList.remove('hidden');
+          if (dom.hdpText) dom.hdpText.textContent = 'Скачивание для оффлайн...';
+          if (dom.hdpCount) dom.hdpCount.textContent = `0 / ${notDownloaded.length}`;
+          if (dom.hdpProgressFill) dom.hdpProgressFill.style.width = '0%';
+          if (dom.hdpCurrentTrack) dom.hdpCurrentTrack.textContent = 'Подготовка...';
+        }
 
         let completed = 0;
-        for (const track of notDownloaded) {
+        for (let i = 0; i < notDownloaded.length; i++) {
+          const track = notDownloaded[i];
+          state.downloadingUrls.add(track.url);
+
+          // Update row in DOM
+          const row = dom.trackList?.querySelector(`[data-track-url="${CSS.escape(track.url)}"]`);
+          if (row) {
+            row.classList.add('is-downloading');
+            const rowBtn = row.querySelector('.offline-track-btn');
+            if (rowBtn) {
+              rowBtn.classList.add('is-downloading');
+              rowBtn.innerHTML = '<span class="spinner-tiny"></span>';
+              rowBtn.title = 'Скачивается...';
+            }
+          }
+
+          // Update Progress Banner & Hero Button
+          if (dom.hdpCurrentTrack) dom.hdpCurrentTrack.textContent = `${track.title} — ${track.artist}`;
+          if (dom.hdpCount) dom.hdpCount.textContent = `${i + 1} / ${notDownloaded.length}`;
+          if (dom.hdpProgressFill) dom.hdpProgressFill.style.width = `${Math.round(((i) / notDownloaded.length) * 100)}%`;
+          dom.heroDownloadAllBtn.innerHTML = `<span class="spinner-tiny"></span> <span>${i + 1} / ${notDownloaded.length}</span>`;
+
           try {
             const res = await fetch('/api/offline/save', {
               method: 'POST',
@@ -3473,14 +3521,40 @@ function setupCollectionHeader(options) {
             if (data.ok) {
               completed++;
               state.offlineUrls.add(track.url);
-              state.offlineTracks.unshift(data.track);
+              const exIdx = state.offlineTracks.findIndex(t => t.url === track.url);
+              if (exIdx >= 0) state.offlineTracks[exIdx] = data.track;
+              else state.offlineTracks.unshift(data.track);
               updateOfflineBadge();
+
+              if (row) {
+                row.classList.remove('is-downloading');
+                const rowBtn = row.querySelector('.offline-track-btn');
+                if (rowBtn) {
+                  rowBtn.classList.remove('is-downloading');
+                  rowBtn.classList.add('is-offline');
+                  rowBtn.title = 'Сохранено оффлайн (нажмите для удаления)';
+                  rowBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
+                }
+              }
             }
-          } catch {}
+          } catch (err) {
+            console.warn('Track download failed:', track.title, err);
+          } finally {
+            state.downloadingUrls.delete(track.url);
+            if (row) row.classList.remove('is-downloading');
+          }
         }
 
-        dom.heroDownloadAllBtn.disabled = false;
-        renderTrackTable(tracks, dom.trackList, false);
+        if (dom.hdpProgressFill) dom.hdpProgressFill.style.width = '100%';
+        if (dom.hdpText) dom.hdpText.textContent = 'Скачивание завершено!';
+        if (dom.hdpCurrentTrack) dom.hdpCurrentTrack.textContent = `Сохранено ${completed} из ${notDownloaded.length} треков`;
+
+        setTimeout(() => {
+          if (dom.heroDownloadProgress) dom.heroDownloadProgress.classList.add('hidden');
+          dom.heroDownloadAllBtn.innerHTML = originalBtnHtml;
+          dom.heroDownloadAllBtn.disabled = false;
+        }, 3000);
+
         toast(`Скачано оффлайн: ${completed} из ${notDownloaded.length} треков!`);
       };
     }

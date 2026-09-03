@@ -228,6 +228,18 @@
                 <input type="text" id="heroFilterInput" placeholder="Поиск в плейлисте...">
               </div>
             </div>
+
+            <div class="hero-download-progress hidden" id="heroDownloadProgress">
+              <div class="hdp-info">
+                <span class="spinner-tiny"></span>
+                <span class="hdp-text" id="hdpText">Скачивание оффлайн...</span>
+                <span class="hdp-count" id="hdpCount">0 / 0</span>
+              </div>
+              <div class="hdp-track-title" id="hdpCurrentTrack"></div>
+              <div class="hdp-bar-wrap">
+                <div class="hdp-bar-fill" id="hdpProgressFill" style="width: 0%;"></div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1132,7 +1144,7 @@
     <div class="sp-section" id="spUpdateSection">
       <div class="sp-section-header-row">
         <span class="sp-section-title">Обновления</span>
-        <span class="sp-badge-tag" id="spCurrentVersionBadge">v0.1.10</span>
+        <span class="sp-badge-tag" id="spCurrentVersionBadge">v0.1.11</span>
       </div>
       <div class="sp-update-container">
         <div class="sp-update-header">
