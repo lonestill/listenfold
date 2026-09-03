@@ -96,10 +96,29 @@ function installApplicationMenu(options) {
           accelerator: 'CommandOrControl+Shift+M',
           click: toggleMiniPlayer,
         },
-        { type: 'separator' },
         { role: 'minimize' },
         { role: 'zoom' },
         ...(process.platform === 'darwin' ? [{ type: 'separator' }, { role: 'front' }] : []),
+      ],
+    },
+    {
+      label: 'Справка',
+      submenu: [
+        {
+          label: 'Проверить обновления...',
+          click: () => {
+            showWindow();
+            sendMediaCommand('check-updates');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Релизы на GitHub',
+          click: () => {
+            const { shell } = require('electron');
+            shell.openExternal('https://github.com/lonestill/listenfold/releases');
+          },
+        },
       ],
     },
   );

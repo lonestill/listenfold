@@ -2742,6 +2742,11 @@ function initDesktopShell() {
     if (command === 'play-pause') togglePlay();
     else if (command === 'next') playNext();
     else if (command === 'previous') playPrev();
+    else if (command === 'check-updates') {
+      if (dom.settingsBtn) dom.settingsBtn.click();
+      const checkBtn = document.getElementById('spCheckUpdateBtn');
+      if (checkBtn) checkBtn.click();
+    }
   });
 }
 
@@ -5567,6 +5572,155 @@ function initSettings() {
       toast('История очищена');
     };
   }
+
+  // Update Manager initialization
+  const spCurrentVersionBadge = $('#spCurrentVersionBadge');
+  const spCheckUpdateBtn = $('#spCheckUpdateBtn');
+  const spUpdateDot = $('#spUpdateDot');
+  const spUpdateText = $('#spUpdateText');
+  const spUpdateCard = $('#spUpdateCard');
+  const spUpdateTitle = $('#spUpdateTitle');
+  const spUpdateMeta = $('#spUpdateMeta');
+  const spUpdateNotes = $('#spUpdateNotes');
+  const spUpdateProgressBox = $('#spUpdateProgressBox');
+  const spUpdateProgressFill = $('#spUpdateProgressFill');
+  const spUpdateProgressLabel = $('#spUpdateProgressLabel');
+  const spDownloadUpdateBtn = $('#spDownloadUpdateBtn');
+  const spReleaseNotesLink = $('#spReleaseNotesLink');
+
+  let latestUpdateData = null;
+  let updatePollTimer = null;
+
+  const formatFileSize = bytes => {
+    if (!bytes || bytes <= 0) return '0 МБ';
+    const mb = bytes / (1024 * 1024);
+    return `${mb.toFixed(1)} МБ`;
+  };
+
+  const checkUpdates = async (manual = false) => {
+    if (spUpdateText) spUpdateText.textContent = 'Проверка обновлений...';
+    if (spUpdateDot) spUpdateDot.className = 'status-dot';
+    if (spCheckUpdateBtn) spCheckUpdateBtn.disabled = true;
+
+    try {
+      const res = await fetch(`/api/updates/check${manual ? '?force=1' : ''}`);
+      const data = await res.json();
+      if (!data) return;
+
+      latestUpdateData = data;
+      if (spCurrentVersionBadge) spCurrentVersionBadge.textContent = `v${data.currentVersion || '0.1.6'}`;
+
+      if (data.hasUpdate) {
+        if (spUpdateDot) spUpdateDot.className = 'status-dot blue';
+        if (spUpdateText) spUpdateText.textContent = `Доступно обновление v${data.latestVersion}`;
+        if (spUpdateCard) spUpdateCard.classList.remove('hidden');
+        if (spUpdateTitle) spUpdateTitle.textContent = `Новая версия: ${data.releaseName || `v${data.latestVersion}`}`;
+        if (spUpdateMeta) {
+          const dateStr = data.publishedAt ? new Date(data.publishedAt).toLocaleDateString('ru-RU') : '';
+          const sizeStr = data.asset ? formatFileSize(data.asset.size) : '';
+          spUpdateMeta.textContent = [dateStr, sizeStr].filter(Boolean).join(' • ');
+        }
+        if (spUpdateNotes) spUpdateNotes.textContent = data.releaseNotes || 'Список изменений не указан.';
+        if (spReleaseNotesLink) spReleaseNotesLink.href = data.htmlUrl || 'https://github.com/lonestill/listenfold/releases';
+
+        if (manual) toast(`Найдено обновление Listenfold v${data.latestVersion}!`);
+      } else {
+        if (spUpdateDot) spUpdateDot.className = 'status-dot green';
+        if (spUpdateText) spUpdateText.textContent = `У вас актуальная версия v${data.currentVersion}`;
+        if (spUpdateCard) spUpdateCard.classList.add('hidden');
+        if (manual) toast('У вас установлена самая свежая версия!');
+      }
+    } catch (err) {
+      if (spUpdateDot) spUpdateDot.className = 'status-dot warning';
+      if (spUpdateText) spUpdateText.textContent = 'Не удалось проверить обновления';
+      if (manual) toast('Ошибка проверки обновлений');
+    } finally {
+      if (spCheckUpdateBtn) spCheckUpdateBtn.disabled = false;
+    }
+  };
+
+  if (spCheckUpdateBtn) {
+    spCheckUpdateBtn.onclick = () => checkUpdates(true);
+  }
+
+  const pollDownloadProgress = () => {
+    if (updatePollTimer) clearInterval(updatePollTimer);
+    updatePollTimer = setInterval(async () => {
+      try {
+        const res = await fetch('/api/updates/status');
+        const status = await res.json();
+        if (!status) return;
+
+        if (status.status === 'downloading') {
+          if (spUpdateProgressFill) spUpdateProgressFill.style.width = `${status.percent}%`;
+          if (spUpdateProgressLabel) {
+            spUpdateProgressLabel.textContent = `${status.percent}% (${formatFileSize(status.downloaded)} / ${formatFileSize(status.total)})`;
+          }
+        } else if (status.status === 'ready') {
+          clearInterval(updatePollTimer);
+          if (spUpdateProgressFill) spUpdateProgressFill.style.width = '100%';
+          if (spUpdateProgressLabel) spUpdateProgressLabel.textContent = '100% — загрузка завершена!';
+          if (spDownloadUpdateBtn) {
+            spDownloadUpdateBtn.disabled = false;
+            spDownloadUpdateBtn.innerHTML = `
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Установить и перезапустить</span>
+            `;
+            spDownloadUpdateBtn.onclick = async () => {
+              toast('Запуск установщика...');
+              try {
+                await fetch('/api/updates/install', { method: 'POST' });
+              } catch {}
+            };
+          }
+        } else if (status.status === 'error') {
+          clearInterval(updatePollTimer);
+          if (spUpdateProgressLabel) spUpdateProgressLabel.textContent = `Ошибка: ${status.error || 'Сбой загрузки'}`;
+          if (spDownloadUpdateBtn) {
+            spDownloadUpdateBtn.disabled = false;
+            spDownloadUpdateBtn.textContent = 'Попробовать снова';
+          }
+        }
+      } catch {
+        clearInterval(updatePollTimer);
+      }
+    }, 400);
+  };
+
+  if (spDownloadUpdateBtn) {
+    spDownloadUpdateBtn.onclick = async () => {
+      if (!latestUpdateData?.asset?.downloadUrl) {
+        if (latestUpdateData?.htmlUrl) window.open(latestUpdateData.htmlUrl, '_blank');
+        return;
+      }
+
+      spDownloadUpdateBtn.disabled = true;
+      spDownloadUpdateBtn.textContent = 'Подготовка загрузки...';
+      if (spUpdateProgressBox) spUpdateProgressBox.classList.remove('hidden');
+
+      try {
+        const res = await fetch('/api/updates/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            downloadUrl: latestUpdateData.asset.downloadUrl,
+            fileName: latestUpdateData.asset.name,
+            version: latestUpdateData.latestVersion,
+          }),
+        });
+        const data = await res.json();
+        if (data.started) {
+          pollDownloadProgress();
+        }
+      } catch (err) {
+        spDownloadUpdateBtn.disabled = false;
+        spDownloadUpdateBtn.textContent = 'Повторить попытку';
+        toast('Не удалось начать скачивание');
+      }
+    };
+  }
+
+  setTimeout(() => checkUpdates(false), 3000);
 
   applySettings();
 }

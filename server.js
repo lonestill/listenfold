@@ -50,15 +50,147 @@ process.on('unhandledRejection', reason => console.error('[UNHANDLED REJECTION]'
 // Cache & Directories
 const cacheDir = process.env.LISTENFOLD_DATA_DIR || path.join(__dirname, '.cache');
 const audioDir = path.join(cacheDir, 'audio');
+const playlistCacheDir = path.join(cacheDir, 'playlists');
+const updatesDir = path.join(cacheDir, 'updates');
 const cookieFile = path.join(cacheDir, 'cookies.txt');
 const ytdlpBinary = String(process.env.YTDLP_PATH || 'yt-dlp').trim() || 'yt-dlp';
+const APP_VERSION = require('./package.json').version;
+
 function safeChmod(target, mode) {
   try { fs.chmodSync(target, mode); } catch {}
 }
-[cacheDir, audioDir].forEach(directory => {
+[cacheDir, audioDir, playlistCacheDir, updatesDir].forEach(directory => {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   safeChmod(directory, 0o700);
 });
+
+function getPlaylistDiskCache(cacheKey) {
+  try {
+    const file = path.join(playlistCacheDir, `${crypto.createHash('md5').update(cacheKey).digest('hex')}.json`);
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (parsed && parsed.expireAt > Date.now() && parsed.payload) {
+        return parsed.payload;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function setPlaylistDiskCache(cacheKey, payload, ttlSec = 7200) {
+  try {
+    const file = path.join(playlistCacheDir, `${crypto.createHash('md5').update(cacheKey).digest('hex')}.json`);
+    const data = {
+      expireAt: Date.now() + (ttlSec * 1000),
+      payload,
+    };
+    fs.writeFileSync(file, JSON.stringify(data), 'utf8');
+  } catch {}
+}
+
+function compareSemver(a, b) {
+  const parse = v => String(v || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+}
+
+function findPlatformAsset(assets) {
+  if (!Array.isArray(assets)) return null;
+  const platform = process.platform;
+  const arch = process.arch;
+
+  if (platform === 'win32') {
+    return assets.find(a => a.name.endsWith('-win-x64.exe') || a.name.endsWith('.exe'));
+  }
+  if (platform === 'darwin') {
+    if (arch === 'arm64') {
+      return assets.find(a => a.name.includes('mac-arm64.dmg'))
+        || assets.find(a => a.name.endsWith('.dmg'))
+        || assets.find(a => a.name.includes('mac-arm64.zip'));
+    }
+    return assets.find(a => a.name.includes('mac-x64.dmg'))
+      || assets.find(a => a.name.endsWith('.dmg'))
+      || assets.find(a => a.name.includes('mac-x64.zip'));
+  }
+  if (platform === 'linux') {
+    return assets.find(a => a.name.endsWith('.AppImage'))
+      || assets.find(a => a.name.endsWith('.deb'));
+  }
+  return null;
+}
+
+let updateDownloadState = {
+  status: 'idle', // 'idle' | 'downloading' | 'ready' | 'error'
+  downloaded: 0,
+  total: 0,
+  percent: 0,
+  fileName: null,
+  filePath: null,
+  error: null,
+  latestVersion: null,
+};
+
+function downloadUrlWithRedirects(targetUrl, destPath, onProgress, maxRedirects = 6) {
+  return new Promise((resolve, reject) => {
+    if (maxRedirects <= 0) return reject(new Error('Too many redirects'));
+
+    const parsed = new URL(targetUrl);
+    const transport = parsed.protocol === 'http:' ? http : https;
+    const req = transport.get(parsed, {
+      headers: {
+        'User-Agent': 'Listenfold-Updater',
+        'Accept': 'application/octet-stream',
+      },
+    }, res => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume();
+        const nextUrl = new URL(res.headers.location, targetUrl).href;
+        return resolve(downloadUrlWithRedirects(nextUrl, destPath, onProgress, maxRedirects - 1));
+      }
+
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+      }
+
+      const total = parseInt(res.headers['content-length'] || '0', 10);
+      let downloaded = 0;
+      const fileStream = fs.createWriteStream(destPath);
+
+      res.on('data', chunk => {
+        downloaded += chunk.length;
+        if (onProgress) onProgress(downloaded, total);
+      });
+
+      res.pipe(fileStream);
+
+      fileStream.on('finish', () => {
+        fileStream.close(() => resolve(destPath));
+      });
+
+      fileStream.on('error', err => {
+        fs.unlink(destPath, () => {});
+        reject(err);
+      });
+    });
+
+    req.on('error', err => {
+      fs.unlink(destPath, () => {});
+      reject(err);
+    });
+
+    req.setTimeout(60000, () => {
+      req.destroy(new Error('Download timeout'));
+    });
+  });
+}
 
 const MAX_SEARCH_RESULTS = 50;
 const MAX_RESCUE_TRACKS = 40;
@@ -154,6 +286,12 @@ function clearServiceCaches() {
       cache.del(key);
     }
   }
+  try {
+    const files = fs.readdirSync(playlistCacheDir);
+    for (const f of files) {
+      if (f.endsWith('.json')) fs.unlinkSync(path.join(playlistCacheDir, f));
+    }
+  } catch {}
 }
 
 // Browser target discovery
@@ -2117,109 +2255,169 @@ function remoteUrl(value) {
 }
 
 function parseYouTubeTracks(raw) {
-  return raw.trim().split('\n').filter(Boolean).map(line => {
+  if (typeof raw === 'object' && raw !== null) {
+    const entries = Array.isArray(raw.entries) ? raw.entries : [];
+    return entries.map(entry => youtubeTrack(entry)).filter(Boolean);
+  }
+  const text = String(raw).trim();
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed.entries)) {
+        return parsed.entries.map(entry => youtubeTrack(entry)).filter(Boolean);
+      }
+    } catch {}
+  }
+  return text.split('\n').filter(Boolean).map(line => {
     try { return youtubeTrack(JSON.parse(line)); } catch { return null; }
   }).filter(Boolean);
 }
 
+const inFlightPlaylists = new Map();
+
 async function loadPlaylist(inputUrl, options = {}) {
   const url = remoteUrl(inputUrl);
   const limit = options.limit == null ? null : clampInteger(options.limit, MAX_RESCUE_TRACKS, 1, MAX_RESCUE_TRACKS);
-  const cacheKey = `playlist:v2:${limit || 'all'}:${url}`;
-  const cached = cache.get(cacheKey);
-  if (cached) return cached;
+  const refresh = options.refresh === true;
+  const cacheKey = `playlist:v3:${limit || 'all'}:${url}`;
 
-  const trackMatch = url.match(/track\/(\d+)/);
-  if (trackMatch && isYandexUrl(url)) {
-    const trackId = trackMatch[1];
-    const data = await ymApi(`/tracks/${trackId}`);
-    const rawTrack = (data.result || data)?.[0];
-    if (!rawTrack) throw new Error('Track not found');
-    const track = ymTrack(rawTrack);
-    const result = {
-      title: track.title,
-      artist: track.artist,
-      cover: track.thumbnail || null,
-      trackCount: 1,
-      duration: track.duration || 0,
-      tracks: [track],
-      type: 'track',
-      source: 'yandex',
-      url,
-    };
-    cache.set(cacheKey, result, 600);
-    return result;
+  if (!refresh) {
+    const cachedMem = cache.get(cacheKey);
+    if (cachedMem) return cachedMem;
+
+    const cachedDisk = getPlaylistDiskCache(cacheKey);
+    if (cachedDisk) {
+      cache.set(cacheKey, cachedDisk, 1800);
+      return cachedDisk;
+    }
   }
 
-  const albumMatch = url.match(/album\/(\d+)/);
-  if (albumMatch && isYandexUrl(url)) {
-    const albumId = albumMatch[1];
-    const data = await ymApi(`/albums/${albumId}/with-tracks`);
-    const album = data.result || data;
-    const tracks = (album.volumes || []).flat().map(ymTrack).slice(0, limit || undefined);
-    const result = {
-      title: album.title || `Альбом #${albumId}`,
-      artist: (album.artists || []).map(a => a.name).join(', ') || '',
-      year: album.year || null,
-      genre: album.genre || null,
-      cover: album.ogImage
-        ? `https://${album.ogImage.replace('%%', '1000x1000')}`
-        : (album.coverUri ? `https://${album.coverUri.replace('%%', '1000x1000')}` : (tracks[0]?.thumbnail || null)),
-      trackCount: tracks.length,
-      duration: tracks.reduce((sum, track) => sum + (track.duration || 0), 0),
-      tracks,
-      type: 'album',
-      source: 'yandex',
-      url,
-    };
-    cache.set(cacheKey, result, 600);
-    return result;
+  if (inFlightPlaylists.has(cacheKey)) {
+    return inFlightPlaylists.get(cacheKey);
   }
 
-  const playlistMatch = url.match(/users\/([^/]+)\/playlists\/(\d+)/);
-  if (playlistMatch && isYandexUrl(url)) {
-    const [, user, kind] = playlistMatch;
-    const data = await ymApi(`/users/${encodeURIComponent(decodeURIComponent(user))}/playlists/${kind}`);
-    const playlist = data.result || data;
-    const tracks = (playlist.tracks || []).map(item => ymTrack(item.track || item)).slice(0, limit || undefined);
-    const result = {
-      title: playlist.title || 'Плейлист',
-      owner: playlist.owner?.name || playlist.owner?.login || '',
-      cover: playlist.ogImage
-        ? `https://${playlist.ogImage.replace('%%', '1000x1000')}`
-        : (playlist.cover?.uri ? `https://${playlist.cover.uri.replace('%%', '1000x1000')}` : (tracks[0]?.thumbnail || null)),
-      trackCount: tracks.length,
-      duration: tracks.reduce((sum, track) => sum + (track.duration || 0), 0),
-      tracks,
-      type: 'playlist',
-      source: 'yandex',
-      url,
-    };
-    cache.set(cacheKey, result, 600);
-    return result;
-  }
+  const loadPromise = (async () => {
+    try {
+      const trackMatch = url.match(/track\/(\d+)/);
+      if (trackMatch && isYandexUrl(url)) {
+        const trackId = trackMatch[1];
+        const data = await ymApi(`/tracks/${trackId}`);
+        const rawTrack = (data.result || data)?.[0];
+        if (!rawTrack) throw new Error('Track not found');
+        const track = ymTrack(rawTrack);
+        const result = {
+          title: track.title,
+          artist: track.artist,
+          cover: track.thumbnail || null,
+          trackCount: 1,
+          duration: track.duration || 0,
+          tracks: [track],
+          type: 'track',
+          source: 'yandex',
+          url,
+        };
+        cache.set(cacheKey, result, 3600);
+        setPlaylistDiskCache(cacheKey, result, 7200);
+        return result;
+      }
 
-  const args = [
-    ...cookieArgs(),
-    '--extractor-args', 'youtube:player_client=web_music',
-    '--dump-json', '--flat-playlist', '--no-download', '--no-warnings',
-  ];
-  if (limit) args.push('--playlist-end', String(limit));
-  args.push('--', url);
-  const raw = await ytdlp(args, 30000);
-  const tracks = parseYouTubeTracks(raw).slice(0, limit || undefined);
-  const result = {
-    title: 'Плейлист YouTube Music',
-    cover: tracks[0]?.thumbnail || null,
-    trackCount: tracks.length,
-    duration: tracks.reduce((sum, track) => sum + (track.duration || 0), 0),
-    tracks,
-    type: 'playlist',
-    source: 'youtube',
-    url,
-  };
-  cache.set(cacheKey, result, 600);
-  return result;
+      const albumMatch = url.match(/album\/(\d+)/);
+      if (albumMatch && isYandexUrl(url)) {
+        const albumId = albumMatch[1];
+        const data = await ymApi(`/albums/${albumId}/with-tracks`);
+        const album = data.result || data;
+        const tracks = (album.volumes || []).flat().map(ymTrack).slice(0, limit || undefined);
+        const result = {
+          title: album.title || `Альбом #${albumId}`,
+          artist: (album.artists || []).map(a => a.name).join(', ') || '',
+          year: album.year || null,
+          genre: album.genre || null,
+          cover: album.ogImage
+            ? `https://${album.ogImage.replace('%%', '1000x1000')}`
+            : (album.coverUri ? `https://${album.coverUri.replace('%%', '1000x1000')}` : (tracks[0]?.thumbnail || null)),
+          trackCount: tracks.length,
+          duration: tracks.reduce((sum, track) => sum + (track.duration || 0), 0),
+          tracks,
+          type: 'album',
+          source: 'yandex',
+          url,
+        };
+        cache.set(cacheKey, result, 3600);
+        setPlaylistDiskCache(cacheKey, result, 7200);
+        return result;
+      }
+
+      const playlistMatch = url.match(/users\/([^/]+)\/playlists\/(\d+)/);
+      if (playlistMatch && isYandexUrl(url)) {
+        const [, user, kind] = playlistMatch;
+        const data = await ymApi(`/users/${encodeURIComponent(decodeURIComponent(user))}/playlists/${kind}`);
+        const playlist = data.result || data;
+        const tracks = (playlist.tracks || []).map(item => ymTrack(item.track || item)).slice(0, limit || undefined);
+        const result = {
+          title: playlist.title || 'Плейлист',
+          owner: playlist.owner?.name || playlist.owner?.login || '',
+          cover: playlist.ogImage
+            ? `https://${playlist.ogImage.replace('%%', '1000x1000')}`
+            : (playlist.cover?.uri ? `https://${playlist.cover.uri.replace('%%', '1000x1000')}` : (tracks[0]?.thumbnail || null)),
+          trackCount: tracks.length,
+          duration: tracks.reduce((sum, track) => sum + (track.duration || 0), 0),
+          tracks,
+          type: 'playlist',
+          source: 'yandex',
+          url,
+        };
+        cache.set(cacheKey, result, 3600);
+        setPlaylistDiskCache(cacheKey, result, 7200);
+        return result;
+      }
+
+      // Fast single JSON dump for YouTube playlists
+      const args = [
+        ...cookieArgs(),
+        '--extractor-args', 'youtube:player_client=web_music,web;player_skip=configs',
+        '--dump-single-json', '--flat-playlist', '--no-download', '--no-warnings',
+      ];
+      if (limit) args.push('--playlist-end', String(limit));
+      args.push('--', url);
+
+      let raw;
+      try {
+        raw = await ytdlp(args, 25000);
+      } catch (err) {
+        raw = await ytdlp([
+          ...cookieArgs(),
+          '--dump-json', '--flat-playlist', '--no-download', '--no-warnings',
+          ...(limit ? ['--playlist-end', String(limit)] : []),
+          '--', url,
+        ], 25000);
+      }
+
+      let parsedJson = null;
+      try { parsedJson = JSON.parse(raw); } catch {}
+
+      const tracks = (parsedJson?.entries ? parseYouTubeTracks(parsedJson) : parseYouTubeTracks(raw)).slice(0, limit || undefined);
+      const thumb = parsedJson?.thumbnails?.[parsedJson.thumbnails.length - 1]?.url;
+      const result = {
+        title: parsedJson?.title || 'Плейлист YouTube Music',
+        artist: parsedJson?.uploader || parsedJson?.channel || '',
+        cover: thumb || tracks[0]?.thumbnail || null,
+        trackCount: tracks.length,
+        duration: tracks.reduce((sum, track) => sum + (track.duration || 0), 0),
+        tracks,
+        type: 'playlist',
+        source: 'youtube',
+        url,
+      };
+      cache.set(cacheKey, result, 3600);
+      setPlaylistDiskCache(cacheKey, result, 7200);
+      return result;
+    } finally {
+      inFlightPlaylists.delete(cacheKey);
+    }
+  })();
+
+  inFlightPlaylists.set(cacheKey, loadPromise);
+  return loadPromise;
 }
 
 async function mapLimit(items, concurrency, worker) {
@@ -2320,68 +2518,101 @@ app.post('/api/rescue', async (req, res) => {
   }
 });
 
+const inFlightLibraries = new Map();
+
 // User libraries
-async function loadYandexLibrary() {
-  const cacheKey = 'lib:yandex';
-  const cached = cache.get(cacheKey);
-  if (cached) return cached;
-
-  try {
-    const acc = await ymApi('/account/status', {}, false);
-    const account = acc.result?.account || acc.account;
-    const uid = account?.uid;
-    const displayName = account?.fullName || account?.displayName || 'Моя музыка';
-    if (!uid) {
-      return {
-        tracks: [],
-        username: 'Яндекс Музыка',
-        unauthenticated: true,
-        error: 'Требуется авторизация в Яндекс Музыке',
-      };
+async function loadYandexLibrary(refresh = false) {
+  const cacheKey = 'lib:yandex:v3';
+  if (!refresh) {
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+    const disk = getPlaylistDiskCache(cacheKey);
+    if (disk) {
+      cache.set(cacheKey, disk, 600);
+      return disk;
     }
-
-    const likesData = await ymApi(`/users/${uid}/likes/tracks`);
-    const trackItems = likesData.result?.library?.tracks || likesData.library?.tracks || [];
-    const trackIds = trackItems.map(track => track.id).filter(Boolean).slice(0, MAX_LIBRARY_TRACKS);
-    const tracks = [];
-    const batchSize = 50;
-
-    for (let i = 0; i < trackIds.length; i += batchSize) {
-      const batch = trackIds.slice(i, i + batchSize);
-      const body = `track-ids=${batch.join(',')}`;
-      try {
-        const batchData = await ymApi('/tracks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body,
-        });
-        const list = Array.isArray(batchData) ? batchData : (batchData.result || []);
-        tracks.push(...list.map(ymTrack));
-      } catch (err) {
-        console.warn('Track batch error:', err.message);
-      }
-    }
-
-    const result = { tracks, username: displayName };
-    cache.set(cacheKey, result, 180);
-    return result;
-  } catch (err) {
-    if (/401|не найден в сессии|unauthorized/i.test(err.message)) {
-      return {
-        tracks: [],
-        username: 'Яндекс Музыка',
-        unauthenticated: true,
-        error: 'Требуется авторизация в Яндекс Музыке',
-      };
-    }
-    throw err;
   }
+
+  if (inFlightLibraries.has(cacheKey)) {
+    return inFlightLibraries.get(cacheKey);
+  }
+
+  const promise = (async () => {
+    try {
+      const acc = await ymApi('/account/status', {}, false);
+      const account = acc.result?.account || acc.account;
+      const uid = account?.uid;
+      const displayName = account?.fullName || account?.displayName || 'Моя музыка';
+      if (!uid) {
+        return {
+          tracks: [],
+          username: 'Яндекс Музыка',
+          unauthenticated: true,
+          error: 'Требуется авторизация в Яндекс Музыке',
+        };
+      }
+
+      const likesData = await ymApi(`/users/${uid}/likes/tracks`);
+      const trackItems = likesData.result?.library?.tracks || likesData.library?.tracks || [];
+      const trackIds = trackItems.map(track => track.id).filter(Boolean).slice(0, MAX_LIBRARY_TRACKS);
+      const batchSize = 50;
+      const batches = [];
+      for (let i = 0; i < trackIds.length; i += batchSize) {
+        batches.push(trackIds.slice(i, i + batchSize));
+      }
+
+      // Parallel batch fetching
+      const batchResults = await Promise.all(batches.map(async batch => {
+        const body = `track-ids=${batch.join(',')}`;
+        try {
+          const batchData = await ymApi('/tracks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body,
+          });
+          const list = Array.isArray(batchData) ? batchData : (batchData.result || []);
+          return list.map(ymTrack);
+        } catch (err) {
+          console.warn('Track batch error:', err.message);
+          return [];
+        }
+      }));
+
+      const tracks = batchResults.flat();
+      const result = { tracks, username: displayName };
+      cache.set(cacheKey, result, 600);
+      setPlaylistDiskCache(cacheKey, result, 1800);
+      return result;
+    } catch (err) {
+      if (/401|не найден в сессии|unauthorized/i.test(err.message)) {
+        return {
+          tracks: [],
+          username: 'Яндекс Музыка',
+          unauthenticated: true,
+          error: 'Требуется авторизация в Яндекс Музыке',
+        };
+      }
+      throw err;
+    } finally {
+      inFlightLibraries.delete(cacheKey);
+    }
+  })();
+
+  inFlightLibraries.set(cacheKey, promise);
+  return promise;
 }
 
-async function loadYouTubeLibrary() {
-  const cacheKey = 'lib:youtube';
-  const cached = cache.get(cacheKey);
-  if (cached) return cached;
+async function loadYouTubeLibrary(refresh = false) {
+  const cacheKey = 'lib:youtube:v3';
+  if (!refresh) {
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+    const disk = getPlaylistDiskCache(cacheKey);
+    if (disk) {
+      cache.set(cacheKey, disk, 600);
+      return disk;
+    }
+  }
 
   const health = getCookieHealth();
   if (!health.youtubeSession) {
@@ -2393,29 +2624,55 @@ async function loadYouTubeLibrary() {
     };
   }
 
-  try {
-    const raw = await ytdlp([
-      ...cookieArgs(),
-      '--extractor-args', 'youtube:player_client=web_music',
-      'https://music.youtube.com/playlist?list=LM',
-      '--dump-json', '--flat-playlist', '--no-download', '--no-warnings',
-      '--playlist-end', String(MAX_LIBRARY_TRACKS),
-    ], 30000);
-    const tracks = parseYouTubeTracks(raw).slice(0, MAX_LIBRARY_TRACKS);
-    const result = { tracks, username: 'Liked Music' };
-    cache.set(cacheKey, result, 180);
-    return result;
-  } catch (err) {
-    if (/The playlist does not exist|Private playlist|Sign in to confirm/i.test(err.message)) {
-      return {
-        tracks: [],
-        username: 'YouTube Music',
-        unauthenticated: true,
-        error: 'Плейлист "Понравившиеся" доступен только после авторизации в аккаунте YouTube Music',
-      };
-    }
-    throw err;
+  if (inFlightLibraries.has(cacheKey)) {
+    return inFlightLibraries.get(cacheKey);
   }
+
+  const promise = (async () => {
+    try {
+      const args = [
+        ...cookieArgs(),
+        '--extractor-args', 'youtube:player_client=web_music,web;player_skip=configs',
+        '--dump-single-json', '--flat-playlist', '--no-download', '--no-warnings',
+        '--playlist-end', String(MAX_LIBRARY_TRACKS),
+        'https://music.youtube.com/playlist?list=LM',
+      ];
+      let raw;
+      try {
+        raw = await ytdlp(args, 30000);
+      } catch {
+        raw = await ytdlp([
+          ...cookieArgs(),
+          '--extractor-args', 'youtube:player_client=web_music',
+          'https://music.youtube.com/playlist?list=LM',
+          '--dump-json', '--flat-playlist', '--no-download', '--no-warnings',
+          '--playlist-end', String(MAX_LIBRARY_TRACKS),
+        ], 30000);
+      }
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch {}
+      const tracks = (parsed?.entries ? parseYouTubeTracks(parsed) : parseYouTubeTracks(raw)).slice(0, MAX_LIBRARY_TRACKS);
+      const result = { tracks, username: parsed?.uploader || 'Liked Music' };
+      cache.set(cacheKey, result, 600);
+      setPlaylistDiskCache(cacheKey, result, 1800);
+      return result;
+    } catch (err) {
+      if (/The playlist does not exist|Private playlist|Sign in to confirm/i.test(err.message)) {
+        return {
+          tracks: [],
+          username: 'YouTube Music',
+          unauthenticated: true,
+          error: 'Плейлист "Понравившиеся" доступен только после авторизации в аккаунте YouTube Music',
+        };
+      }
+      throw err;
+    } finally {
+      inFlightLibraries.delete(cacheKey);
+    }
+  })();
+
+  inFlightLibraries.set(cacheKey, promise);
+  return promise;
 }
 
 function providerCookieString(patterns) {
@@ -3330,6 +3587,126 @@ app.get('/api/cookies/status', async (req, res) => {
     yandexHasPlus: ymLive.hasPlus,
     yandexUsername: ymLive.username,
   });
+});
+
+// Update Manager routes
+app.get('/api/updates/check', async (req, res) => {
+  const force = req.query.force === '1';
+  if (!force) {
+    const cached = cache.get('update:latest:v2');
+    if (cached) return res.json(cached);
+  }
+
+  try {
+    const raw = await httpRequest('https://api.github.com/repos/lonestill/listenfold/releases/latest', {
+      headers: { 'User-Agent': 'Listenfold-Updater' },
+      timeout: 10000,
+    });
+    if (raw.status !== 200) {
+      return res.status(raw.status).json({ error: `GitHub API HTTP ${raw.status}`, currentVersion: APP_VERSION });
+    }
+
+    const data = JSON.parse(raw.data);
+    const latestTag = data.tag_name || '';
+    const latestVersion = latestTag.replace(/^v/i, '');
+    const hasUpdate = compareSemver(latestVersion, APP_VERSION) > 0;
+    const asset = findPlatformAsset(data.assets);
+
+    const result = {
+      hasUpdate,
+      currentVersion: APP_VERSION,
+      latestVersion,
+      releaseName: data.name || latestTag,
+      releaseNotes: data.body || '',
+      publishedAt: data.published_at,
+      htmlUrl: data.html_url,
+      asset: asset ? {
+        name: asset.name,
+        size: asset.size,
+        downloadUrl: asset.browser_download_url,
+      } : null,
+      platform: process.platform,
+    };
+
+    cache.set('update:latest:v2', result, 180);
+    res.json(result);
+  } catch (err) {
+    console.warn('Update check failed:', err.message);
+    res.status(500).json({ error: err.message, currentVersion: APP_VERSION });
+  }
+});
+
+app.get('/api/updates/status', (req, res) => {
+  res.json(updateDownloadState);
+});
+
+app.post('/api/updates/download', async (req, res) => {
+  if (updateDownloadState.status === 'downloading') {
+    return res.json(updateDownloadState);
+  }
+
+  const { downloadUrl, fileName, version } = req.body || {};
+  if (!downloadUrl || !fileName) {
+    return res.status(400).json({ error: 'downloadUrl and fileName required' });
+  }
+
+  const destPath = path.join(updatesDir, fileName);
+  updateDownloadState = {
+    status: 'downloading',
+    downloaded: 0,
+    total: 0,
+    percent: 0,
+    fileName,
+    filePath: destPath,
+    error: null,
+    latestVersion: version || null,
+  };
+
+  res.json({ ok: true, started: true });
+
+  downloadUrlWithRedirects(downloadUrl, destPath, (downloaded, total) => {
+    updateDownloadState.downloaded = downloaded;
+    updateDownloadState.total = total;
+    updateDownloadState.percent = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+  }).then(() => {
+    updateDownloadState.status = 'ready';
+    updateDownloadState.percent = 100;
+  }).catch(err => {
+    console.error('Update download error:', err.message);
+    updateDownloadState.status = 'error';
+    updateDownloadState.error = err.message;
+  });
+});
+
+app.post('/api/updates/install', (req, res) => {
+  if (updateDownloadState.status !== 'ready' || !updateDownloadState.filePath || !fs.existsSync(updateDownloadState.filePath)) {
+    return res.status(400).json({ error: 'Пакет обновления не готов к установке' });
+  }
+
+  const filePath = updateDownloadState.filePath;
+  const platform = process.platform;
+
+  res.json({ ok: true, installing: true });
+
+  setTimeout(() => {
+    try {
+      if (platform === 'win32') {
+        const installer = spawn(filePath, [], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        installer.unref();
+      } else if (platform === 'darwin') {
+        spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref();
+      } else if (platform === 'linux') {
+        fs.chmodSync(filePath, 0o755);
+        spawn(filePath, [], { detached: true, stdio: 'ignore' }).unref();
+      }
+      setTimeout(() => process.exit(0), 800);
+    } catch (err) {
+      console.error('Failed to launch installer:', err);
+    }
+  }, 300);
 });
 
 app.listen(PORT, HOST, () => {

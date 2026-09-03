@@ -1120,6 +1120,46 @@
       </div>
     </div>
 
+    <div class="sp-section" id="spUpdateSection">
+      <div class="sp-section-header-row">
+        <span class="sp-section-title">Обновления</span>
+        <span class="sp-badge-tag" id="spCurrentVersionBadge">v0.1.7</span>
+      </div>
+      <div class="sp-update-container">
+        <div class="sp-update-header">
+          <div class="sp-update-status" id="spUpdateStatus">
+            <span class="status-dot green" id="spUpdateDot"></span>
+            <span id="spUpdateText">Проверка обновлений...</span>
+          </div>
+          <button class="sp-action-btn" id="spCheckUpdateBtn" title="Проверить наличие обновлений">
+            <svg class="icon-refresh" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+            <span>Проверить</span>
+          </button>
+        </div>
+
+        <div class="sp-update-card hidden" id="spUpdateCard">
+          <div class="sp-update-card-title" id="spUpdateTitle">Доступна новая версия</div>
+          <div class="sp-update-meta" id="spUpdateMeta"></div>
+          <div class="sp-update-notes" id="spUpdateNotes"></div>
+          
+          <div class="sp-update-progress-box hidden" id="spUpdateProgressBox">
+            <div class="sp-update-progress-bar">
+              <div class="sp-update-progress-fill" id="spUpdateProgressFill"></div>
+            </div>
+            <div class="sp-update-progress-label" id="spUpdateProgressLabel">0%</div>
+          </div>
+
+          <div class="sp-update-actions">
+            <button class="sp-action-btn primary" id="spDownloadUpdateBtn">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Скачать и установить</span>
+            </button>
+            <a class="sp-link-btn" id="spReleaseNotesLink" href="#" target="_blank" rel="noopener">История версий ↗</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="sp-footer">
       <button class="sp-footer-btn" id="setShortcutsBtn">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/></svg>
