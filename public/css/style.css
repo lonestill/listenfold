@@ -6142,3 +6142,28 @@ html.desktop-shell .wave-list .table-row.active-row {
   color: #fff;
   text-decoration: underline;
 }
+
+/* Offline Music Styles */
+.action-icon-btn.offline-track-btn.is-offline {
+  color: #10b981;
+}
+
+.action-icon-btn.offline-track-btn:hover {
+  color: #10b981;
+}
+
+.hero-src-badge.badge-offline {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.spinner-tiny {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #10b981;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  display: inline-block;
+}

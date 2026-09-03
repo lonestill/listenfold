@@ -3158,6 +3158,43 @@ function findExistingAudioFile(basePath) {
   return null;
 }
 
+const offlineManifestFile = path.join(cacheDir, 'offline_manifest.json');
+
+function loadOfflineManifest() {
+  try {
+    if (fs.existsSync(offlineManifestFile)) {
+      const data = JSON.parse(fs.readFileSync(offlineManifestFile, 'utf8'));
+      if (Array.isArray(data)) return data;
+    }
+  } catch {}
+  return [];
+}
+
+function saveOfflineManifest(manifest) {
+  try {
+    atomicWritePrivate(offlineManifestFile, JSON.stringify(manifest, null, 2));
+  } catch (err) {
+    console.warn('Failed to save offline manifest:', err.message);
+  }
+}
+
+function getLocalAudioFilePath(url) {
+  if (!url) return null;
+  let safeUrl;
+  try { safeUrl = playbackUrl(url); } catch { safeUrl = url; }
+  const hash = crypto.createHash('md5').update(safeUrl).digest('hex');
+  const ymPath = path.join(audioDir, `${hash}.mp3`);
+  try {
+    if (fs.existsSync(ymPath) && fs.statSync(ymPath).size > 10000) return ymPath;
+  } catch {}
+
+  const baseFilePath = path.join(audioDir, hash);
+  const ytPath = findExistingAudioFile(baseFilePath);
+  if (ytPath) return ytPath;
+
+  return null;
+}
+
 async function prepareYouTubeTrack(url) {
   const hash = crypto.createHash('md5').update(url).digest('hex');
   const baseFilePath = path.join(audioDir, hash);
@@ -3421,6 +3458,86 @@ app.get('/api/audio/prefetch', async (req, res) => {
   });
 
   res.json({ ok: true, started: true });
+});
+
+// Offline Music endpoints
+app.get('/api/offline/tracks', (req, res) => {
+  const manifest = loadOfflineManifest();
+  const valid = [];
+  let changed = false;
+
+  for (const item of manifest) {
+    const localPath = getLocalAudioFilePath(item.url);
+    if (localPath) {
+      valid.push({
+        ...item,
+        localPath,
+        fileSize: fs.statSync(localPath).size,
+      });
+    } else {
+      changed = true;
+    }
+  }
+
+  if (changed) saveOfflineManifest(valid);
+  res.json({ ok: true, count: valid.length, tracks: valid });
+});
+
+app.post('/api/offline/save', async (req, res) => {
+  const { track } = req.body || {};
+  if (!track || !track.url) return res.status(400).json({ error: 'Track with valid url is required' });
+
+  try {
+    const url = track.url;
+    let filePath = getLocalAudioFilePath(url);
+    if (!filePath) {
+      let safeUrl;
+      try { safeUrl = playbackUrl(url); } catch { safeUrl = url; }
+      const yandexSource = isYandexUrl(safeUrl) || /^ym-\d+$/.test(safeUrl);
+      filePath = yandexSource ? await prepareYandexTrack(safeUrl) : await prepareYouTubeTrack(safeUrl);
+    }
+
+    const manifest = loadOfflineManifest();
+    const existingIdx = manifest.findIndex(t => t.url === track.url || (t.id && track.id && t.id === track.id));
+    const entry = {
+      ...track,
+      downloadedAt: Date.now(),
+      fileSize: fs.existsSync(filePath) ? fs.statSync(filePath).size : 0,
+    };
+
+    if (existingIdx >= 0) manifest[existingIdx] = entry;
+    else manifest.unshift(entry);
+
+    saveOfflineManifest(manifest);
+    res.json({ ok: true, track: entry });
+  } catch (err) {
+    console.error('Offline save error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/offline/remove', (req, res) => {
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'url required' });
+
+  try {
+    const localPath = getLocalAudioFilePath(url);
+    if (localPath) unlinkQuietly(localPath);
+
+    const manifest = loadOfflineManifest().filter(t => t.url !== url);
+    saveOfflineManifest(manifest);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/offline/check-batch', (req, res) => {
+  const { urls } = req.body || {};
+  if (!Array.isArray(urls)) return res.json({ ok: true, offlineUrls: [] });
+
+  const offlineUrls = urls.filter(u => Boolean(getLocalAudioFilePath(u)));
+  res.json({ ok: true, offlineUrls });
 });
 
 app.get('/api/status', async (req, res) => {

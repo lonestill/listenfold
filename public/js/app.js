@@ -66,6 +66,10 @@ const state = {
   karaokeOffset: 0,
   karaokeLoop: false,
   karaokeLoopIndex: -1,
+
+  // Offline storage
+  offlineTracks: [],
+  offlineUrls: new Set(),
 };
 
 // Concurrency & Playback Safety
@@ -117,6 +121,7 @@ const dom = {
   heroPlayAllBtn:     $('#heroPlayAllBtn'),
   heroShuffleBtn:     $('#heroShuffleBtn'),
   heroQueueAllBtn:    $('#heroQueueAllBtn'),
+  heroDownloadAllBtn: $('#heroDownloadAllBtn'),
   heroOpenLinkBtn:    $('#heroOpenLinkBtn'),
   heroFilterInput:    $('#heroFilterInput'),
   searchResults:      $('#searchResults'),
@@ -127,6 +132,7 @@ const dom = {
   queuePreviewList:   $('#queuePreviewList'),
   clearQueueBtn:      $('#clearQueueBtn'),
   sidebarLikedCount:  $('#sidebarLikedCount'),
+  sidebarOfflineCount: $('#sidebarOfflineCount'),
   loading:            $('#loading'),
   loadingText:        $('#loadingText'),
 
@@ -916,6 +922,7 @@ function renderTrackTable(tracks, container, isQueue = false) {
   container.innerHTML = tracks.map((track, i) => {
     const isCurrent = trackKey(state.currentTrack) === trackKey(track);
     const isLiked = state.liked.some(t => trackKey(t) === trackKey(track));
+    const isOffline = state.offlineUrls.has(track.url) || state.offlineTracks.some(t => trackKey(t) === trackKey(track));
     const activeVariantIndex = isCurrent && Number.isInteger(state.currentTrack?.activeVariantIndex)
       ? state.currentTrack.activeVariantIndex
       : getSelectedVariantIndex(track);
@@ -953,6 +960,12 @@ function renderTrackTable(tracks, container, isQueue = false) {
         <div class="row-duration">${fmtTime(track.duration)}</div>
 
         <div class="row-actions">
+          <button class="action-icon-btn offline-track-btn ${isOffline ? 'is-offline' : ''}" title="${isOffline ? 'Сохранено оффлайн (нажмите для удаления)' : 'Скачать для оффлайн прослушивания'}" data-idx="${i}">
+            ${isOffline
+              ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>'
+              : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+            }
+          </button>
           <button class="action-icon-btn add-btn" title="В очередь" data-idx="${i}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
@@ -1009,6 +1022,15 @@ function renderTrackTable(tracks, container, isQueue = false) {
       }
       persistSession();
       playTrack(track, { variantIndex });
+    });
+  });
+
+  container.querySelectorAll('.offline-track-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx, 10);
+      const track = isQueue ? state.queue[idx] : tracks[idx];
+      if (track) toggleTrackOffline(track, btn);
     });
   });
 
@@ -2914,6 +2936,7 @@ function highlightActiveRow() {
 
 function updateCounters() {
   if (dom.sidebarLikedCount) dom.sidebarLikedCount.textContent = state.liked.length;
+  if (dom.sidebarOfflineCount) dom.sidebarOfflineCount.textContent = state.offlineTracks.length;
 }
 
 function updateVolumeUI() {
@@ -3161,6 +3184,24 @@ function showView(view) {
       break;
     }
 
+    case 'offline': {
+      const dur = state.offlineTracks.reduce((a, t) => a + (t.duration || 0), 0);
+      setupCollectionHeader({
+        title: 'Оффлайн музыка',
+        artist: `${state.offlineTracks.length} скачанных треков • доступно без интернета`,
+        type: 'offline',
+        source: 'local',
+        coverUrl: state.offlineTracks[0]?.thumbnail || null,
+        coverSvg: OFFLINE_OFFICIAL_SVG,
+        tracks: state.offlineTracks,
+        duration: dur,
+      });
+      dom.searchResults.classList.remove('hidden');
+      state.currentTracksList = state.offlineTracks;
+      renderTrackTable(state.offlineTracks, dom.trackList, false);
+      break;
+    }
+
     case 'ym-library':
       loadLibrary('yandex', 'Яндекс.Музыка', 'Мне нравится');
       break;
@@ -3168,6 +3209,87 @@ function showView(view) {
     case 'yt-library':
       loadLibrary('youtube', 'YouTube Music', 'Понравившиеся');
       break;
+  }
+}
+
+const OFFLINE_OFFICIAL_SVG = `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+
+function updateOfflineBadge() {
+  if (dom.sidebarOfflineCount) {
+    dom.sidebarOfflineCount.textContent = state.offlineTracks.length;
+  }
+}
+
+async function loadOfflineTracks() {
+  try {
+    const res = await fetch('/api/offline/tracks');
+    const data = await res.json();
+    if (data && Array.isArray(data.tracks)) {
+      state.offlineTracks = data.tracks;
+      state.offlineUrls = new Set(data.tracks.map(t => t.url).filter(Boolean));
+      updateOfflineBadge();
+    }
+  } catch (err) {
+    console.debug('Failed to load offline tracks:', err);
+  }
+}
+
+async function toggleTrackOffline(track, btn) {
+  if (!track || !track.url) return;
+  const isOffline = state.offlineUrls.has(track.url) || state.offlineTracks.some(t => trackKey(t) === trackKey(track));
+
+  if (isOffline) {
+    btn.disabled = true;
+    try {
+      await fetch('/api/offline/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: track.url }),
+      });
+      state.offlineUrls.delete(track.url);
+      state.offlineTracks = state.offlineTracks.filter(t => t.url !== track.url && trackKey(t) !== trackKey(track));
+      updateOfflineBadge();
+      btn.classList.remove('is-offline');
+      btn.title = 'Скачать для оффлайн прослушивания';
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+      if (state.currentView === 'offline') {
+        renderTrackTable(state.offlineTracks, dom.trackList, false);
+      }
+      toast(`Удалено из оффлайн: ${track.title}`);
+    } catch (err) {
+      toast('Ошибка при удалении оффлайн-трека');
+    } finally {
+      btn.disabled = false;
+    }
+  } else {
+    btn.disabled = true;
+    btn.innerHTML = `<div class="spinner-tiny"></div>`;
+    toast(`Скачивание для оффлайн: ${track.title}...`);
+    try {
+      const res = await fetch('/api/offline/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Ошибка загрузки');
+
+      state.offlineUrls.add(track.url);
+      const existingIdx = state.offlineTracks.findIndex(t => t.url === track.url);
+      if (existingIdx >= 0) state.offlineTracks[existingIdx] = data.track;
+      else state.offlineTracks.unshift(data.track);
+
+      updateOfflineBadge();
+      btn.classList.add('is-offline');
+      btn.title = 'Сохранено оффлайн (нажмите, чтобы удалить)';
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`;
+      toast(`Трек "${track.title}" доступен оффлайн!`);
+    } catch (err) {
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+      toast(`Не удалось скачать трек: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+    }
   }
 }
 
@@ -3224,6 +3346,9 @@ function setupCollectionHeader(options) {
       dom.heroSrcBadge.textContent = 'Избранное';
     } else if (type === 'history') {
       dom.heroSrcBadge.textContent = 'История';
+    } else if (type === 'offline') {
+      dom.heroSrcBadge.classList.add('badge-offline');
+      dom.heroSrcBadge.textContent = 'Оффлайн';
     } else {
       dom.heroSrcBadge.textContent = 'Коллекция';
     }
@@ -3236,6 +3361,7 @@ function setupCollectionHeader(options) {
       library: 'Библиотека',
       liked: 'Избранные треки',
       history: 'История прослушиваний',
+      offline: 'Оффлайн-коллекция',
     };
     dom.collectionType.textContent = typeNames[type] || 'Сборник';
   }
@@ -3248,6 +3374,8 @@ function setupCollectionHeader(options) {
       dom.heroAmbientGlow.style.background = 'radial-gradient(circle, rgba(239, 68, 68, 0.22) 0%, transparent 70%)';
     } else if (type === 'liked') {
       dom.heroAmbientGlow.style.background = 'radial-gradient(circle, rgba(244, 63, 94, 0.22) 0%, transparent 70%)';
+    } else if (type === 'offline') {
+      dom.heroAmbientGlow.style.background = 'radial-gradient(circle, rgba(16, 185, 129, 0.22) 0%, transparent 70%)';
     } else {
       dom.heroAmbientGlow.style.background = 'radial-gradient(circle, rgba(56, 189, 248, 0.2) 0%, transparent 70%)';
     }
@@ -3314,6 +3442,48 @@ function setupCollectionHeader(options) {
       syncQueueUI();
       toast(`Добавлено в очередь (+${tracks.length})`);
     };
+  }
+
+  // Download All for offline
+  if (dom.heroDownloadAllBtn) {
+    if (type === 'offline') {
+      dom.heroDownloadAllBtn.classList.add('hidden');
+    } else {
+      dom.heroDownloadAllBtn.classList.remove('hidden');
+      dom.heroDownloadAllBtn.onclick = async () => {
+        if (!tracks || !tracks.length) return;
+        const notDownloaded = tracks.filter(t => !state.offlineUrls.has(t.url));
+        if (!notDownloaded.length) {
+          toast('Все треки этого списка уже сохранены оффлайн!');
+          return;
+        }
+
+        dom.heroDownloadAllBtn.disabled = true;
+        toast(`Скачивание ${notDownloaded.length} треков для оффлайн...`);
+
+        let completed = 0;
+        for (const track of notDownloaded) {
+          try {
+            const res = await fetch('/api/offline/save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ track }),
+            });
+            const data = await res.json();
+            if (data.ok) {
+              completed++;
+              state.offlineUrls.add(track.url);
+              state.offlineTracks.unshift(data.track);
+              updateOfflineBadge();
+            }
+          } catch {}
+        }
+
+        dom.heroDownloadAllBtn.disabled = false;
+        renderTrackTable(tracks, dom.trackList, false);
+        toast(`Скачано оффлайн: ${completed} из ${notDownloaded.length} треков!`);
+      };
+    }
   }
 
   // Open Link in original
@@ -6005,10 +6175,18 @@ initWave();
 initDesktopShell();
 restorePersistedSession();
 loadRuntimeStatus();
+loadOfflineTracks();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.desktop && !window.listenfoldDesktop) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
+
+window.addEventListener('offline', () => {
+  toast('Нет интернет-соединения. Доступно оффлайн прослушивание сохранённых треков.');
+});
+window.addEventListener('online', () => {
+  toast('Интернет-соединение восстановлено');
+});
 
 window.addEventListener('beforeunload', () => persistSession(true));
 document.addEventListener('visibilitychange', () => {
