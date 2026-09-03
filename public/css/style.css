@@ -5639,12 +5639,14 @@ html.desktop-shell .wave-list .table-row.active-row {
 
 /* Parametric Equalizer Modal (Screenshot accurate) */
 .eq-modal {
-  width: min(720px, 94vw);
-  background: #101319;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.75), 0 0 1px rgba(255, 255, 255, 0.2);
-  padding: 16px 20px 16px;
+  width: min(740px, 94vw);
+  background: rgba(14, 16, 23, 0.96);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 18px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.85), 0 0 1px rgba(255, 255, 255, 0.2);
+  padding: 18px 22px 18px;
   display: flex;
   flex-direction: column;
   user-select: none;
@@ -5659,6 +5661,9 @@ html.desktop-shell .wave-list .table-row.active-row {
 
 .eq-preset-picker {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .eq-preset-btn {
@@ -5685,11 +5690,11 @@ html.desktop-shell .wave-list .table-row.active-row {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  min-width: 150px;
-  background: #161922;
+  min-width: 160px;
+  background: #141720;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
   padding: 4px;
   z-index: 100;
   display: flex;
@@ -5762,7 +5767,7 @@ html.desktop-shell .wave-list .table-row.active-row {
   display: flex;
   gap: 8px;
   width: 100%;
-  height: 260px;
+  height: 280px;
   position: relative;
 }
 
@@ -5780,7 +5785,7 @@ html.desktop-shell .wave-list .table-row.active-row {
 }
 
 .eq-y-axis span.zero-db {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.75);
   font-weight: 600;
 }
 
@@ -5788,10 +5793,10 @@ html.desktop-shell .wave-list .table-row.active-row {
   flex: 1;
   height: 100%;
   position: relative;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
-  background: #0c0e13;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: #0a0c11;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .eq-canvas-wrapper canvas {
@@ -5923,8 +5928,8 @@ html.desktop-shell .wave-list .table-row.active-row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
   padding: 3px;
 }
@@ -5934,7 +5939,7 @@ html.desktop-shell .wave-list .table-row.active-row {
   font-size: 12px;
   font-weight: 500;
   border-radius: 6px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
@@ -5943,12 +5948,13 @@ html.desktop-shell .wave-list .table-row.active-row {
 
 .eq-type-btn:hover {
   color: #fff;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .eq-type-btn.active {
-  background: rgba(59, 130, 246, 0.24);
-  border: 1px solid rgba(59, 130, 246, 0.45);
-  color: #93c5fd;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #fff;
   font-weight: 600;
 }
 

@@ -334,6 +334,7 @@ const dom = {
   dockJumpFwdBtn:     $('#dockJumpFwdBtn'),
   dockSpeedBtn:       $('#dockSpeedBtn'),
   dockEqBtn:          $('#dockEqBtn'),
+  topbarEqBtn:        $('#topbarEqBtn'),
   dockQueueBtn:       $('#dockQueueBtn'),
   volumeWidget:       $('#volumeWidget'),
 
@@ -478,17 +479,30 @@ state.selectedEqBand = -1;
 
 function initAudioContext() {
   if (audioCtx) {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
+    if (!mediaSourceNode && audio) {
+      try {
+        mediaSourceNode = audioCtx.createMediaElementSource(audio);
+        rebuildEqAudioGraph();
+      } catch {}
+    }
     return;
   }
+
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.82;
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.84;
     dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-    mediaSourceNode = audioCtx.createMediaElementSource(audio);
+    if (audio) {
+      try {
+        mediaSourceNode = audioCtx.createMediaElementSource(audio);
+      } catch {}
+    }
     rebuildEqAudioGraph();
   } catch (e) {
     console.warn('AudioContext init:', e.message);
@@ -496,28 +510,40 @@ function initAudioContext() {
 }
 
 function rebuildEqAudioGraph() {
-  if (!audioCtx || !mediaSourceNode) return;
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch {}
+  }
+  if (!audioCtx) return;
 
-  try { mediaSourceNode.disconnect(); } catch {}
   for (const n of eqFilterNodes) {
     try { n.disconnect(); } catch {}
   }
   eqFilterNodes = [];
 
-  let last = mediaSourceNode;
   for (const band of state.eqBands) {
     const filter = audioCtx.createBiquadFilter();
     filter.type = band.type || 'peaking';
     filter.frequency.value = band.freq;
     filter.gain.value = band.gain;
     filter.Q.value = band.q || 1.0;
-    last.connect(filter);
-    last = filter;
     eqFilterNodes.push(filter);
   }
 
-  last.connect(analyser);
-  analyser.connect(audioCtx.destination);
+  if (mediaSourceNode) {
+    try { mediaSourceNode.disconnect(); } catch {}
+    let last = mediaSourceNode;
+    for (const filter of eqFilterNodes) {
+      last.connect(filter);
+      last = filter;
+    }
+    if (analyser) {
+      try { analyser.disconnect(); } catch {}
+      last.connect(analyser);
+      analyser.connect(audioCtx.destination);
+    }
+  }
 }
 
 function updateFilterNode(index) {
@@ -533,6 +559,7 @@ function updateFilterNode(index) {
 
 function setEqPreset(preset, notify = true) {
   state.eqPreset = preset;
+  state.selectedEqBand = -1;
   localStorage.setItem('lf_eq_preset', preset);
 
   if (EQ_PRESETS[preset]) {
@@ -550,9 +577,15 @@ function setEqPreset(preset, notify = true) {
     rebuildEqAudioGraph();
   }
 
-  if (typeof updateEqPresetUI === 'function') updateEqPresetUI();
-  if (typeof updateEqBottomPanel === 'function') updateEqBottomPanel();
-  if (typeof drawEqCanvas === 'function') drawEqCanvas();
+  const updateUI = (typeof updateEqPresetUI === 'function' ? updateEqPresetUI : window.updateEqPresetUI);
+  if (typeof updateUI === 'function') updateUI();
+
+  const updateBottom = (typeof updateEqBottomPanel === 'function' ? updateEqBottomPanel : window.updateEqBottomPanel);
+  if (typeof updateBottom === 'function') updateBottom();
+
+  const drawCanvas = (typeof drawEqCanvas === 'function' ? drawEqCanvas : window.drawEqCanvas);
+  if (typeof drawCanvas === 'function') drawCanvas();
+
   if (notify) toast(`Эквалайзер: ${preset.toUpperCase()}`);
 }
 
@@ -4671,6 +4704,10 @@ document.addEventListener('keydown', e => {
     case 'KeyR':
       dom.repeatBtn.click();
       break;
+    case 'KeyE':
+      e.preventDefault();
+      if (typeof window.toggleEqModal === 'function') window.toggleEqModal();
+      break;
     case 'Slash':
       e.preventDefault();
       dom.searchInput.focus();
@@ -4972,21 +5009,21 @@ function initDockBarControls() {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
-    // Dark canvas background
-    ctx.fillStyle = '#0c0e13';
+    // Deep dark background matching screenshot
+    ctx.fillStyle = '#0a0c11';
     ctx.fillRect(0, 0, w, h);
 
-    // 1. Horizontal dB grid lines
+    // 1. Horizontal dB grid lines (-21dB to +21dB in steps of 3dB)
     for (let db = MIN_DB; db <= MAX_DB; db += 3) {
-      const y = dbToY(db, h);
+      const y = Math.round(dbToY(db, h)) + 0.5;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
       if (db === 0) {
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.20)';
         ctx.lineWidth = 1.2;
       } else {
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
         ctx.lineWidth = 1;
       }
       ctx.stroke();
@@ -4995,53 +5032,68 @@ function initDockBarControls() {
     // 2. Vertical frequency grid lines
     const gridFreqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
     for (const f of gridFreqs) {
-      const x = freqToX(f, w);
+      const x = Math.round(freqToX(f, w)) + 0.5;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
       ctx.lineWidth = 1;
       ctx.stroke();
     }
 
-    // 3. Real-time background audio spectrum
-    if (analyser && state.isPlaying && dataArray) {
+    // 3. Real-time background audio spectrum (Smoothed FFT wave matching screenshot)
+    if (analyser && (!audio.paused || state.isPlaying) && dataArray) {
       analyser.getByteFrequencyData(dataArray);
       const nyquist = (audioCtx?.sampleRate || 44100) / 2;
       const binCount = analyser.frequencyBinCount;
 
-      ctx.beginPath();
-      ctx.moveTo(0, h);
-
-      let first = true;
-      for (let i = 0; i < FREQ_POINTS; i++) {
+      const specPoints = [];
+      for (let i = 0; i < FREQ_POINTS; i += 2) {
         const f = sampleFreqs[i];
         if (f > nyquist) break;
-        const bin = Math.min(binCount - 1, Math.floor((f / nyquist) * binCount));
-        const val = (dataArray[bin] || 0) / 255;
+        const exactBin = (f / nyquist) * (binCount - 1);
+        const b0 = Math.floor(exactBin);
+        const b1 = Math.min(binCount - 1, b0 + 1);
+        const frac = exactBin - b0;
+        const rawVal = ((dataArray[b0] || 0) * (1 - frac) + (dataArray[b1] || 0) * frac) / 255;
         const x = freqToX(f, w);
-        const specY = h - (val * h * 0.65);
-
-        if (first) {
-          ctx.lineTo(x, specY);
-          first = false;
-        } else {
-          ctx.lineTo(x, specY);
-        }
+        const dbNorm = Math.pow(rawVal, 1.35);
+        const specY = h - (dbNorm * h * 0.70);
+        specPoints.push({ x, y: specY });
       }
 
-      ctx.lineTo(w, h);
-      ctx.closePath();
+      if (specPoints.length > 2) {
+        // Gradient fill under spectrum wave
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        ctx.lineTo(specPoints[0].x, specPoints[0].y);
+        for (let i = 0; i < specPoints.length - 1; i++) {
+          const xc = (specPoints[i].x + specPoints[i + 1].x) / 2;
+          const yc = (specPoints[i].y + specPoints[i + 1].y) / 2;
+          ctx.quadraticCurveTo(specPoints[i].x, specPoints[i].y, xc, yc);
+        }
+        ctx.lineTo(w, h);
+        ctx.closePath();
 
-      const grad = ctx.createLinearGradient(0, h * 0.35, 0, h);
-      grad.addColorStop(0, 'rgba(56, 189, 248, 0.16)');
-      grad.addColorStop(1, 'rgba(56, 189, 248, 0.01)');
-      ctx.fillStyle = grad;
-      ctx.fill();
+        const grad = ctx.createLinearGradient(0, h * 0.25, 0, h);
+        grad.addColorStop(0, 'rgba(56, 189, 248, 0.18)');
+        grad.addColorStop(0.65, 'rgba(56, 189, 248, 0.04)');
+        grad.addColorStop(1, 'rgba(56, 189, 248, 0.00)');
+        ctx.fillStyle = grad;
+        ctx.fill();
 
-      ctx.strokeStyle = 'rgba(125, 211, 252, 0.32)';
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
+        // Spectrum stroke line
+        ctx.beginPath();
+        ctx.moveTo(specPoints[0].x, specPoints[0].y);
+        for (let i = 0; i < specPoints.length - 1; i++) {
+          const xc = (specPoints[i].x + specPoints[i + 1].x) / 2;
+          const yc = (specPoints[i].y + specPoints[i + 1].y) / 2;
+          ctx.quadraticCurveTo(specPoints[i].x, specPoints[i].y, xc, yc);
+        }
+        ctx.strokeStyle = 'rgba(125, 211, 252, 0.35)';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+      }
     }
 
     // 4. Combined EQ response curve
@@ -5057,48 +5109,83 @@ function initDockBarControls() {
       }
     }
 
-    ctx.beginPath();
+    const curvePoints = [];
     for (let i = 0; i < FREQ_POINTS; i++) {
       const x = (i / (FREQ_POINTS - 1)) * w;
       const clampedDb = Math.max(MIN_DB, Math.min(MAX_DB, totalDb[i]));
       const y = dbToY(clampedDb, h);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      curvePoints.push({ x, y });
     }
 
-    ctx.shadowColor = '#60a5fa';
-    ctx.shadowBlur = 8;
-    ctx.strokeStyle = '#7aa2f7';
-    ctx.lineWidth = 2.8;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
+    if (curvePoints.length > 2) {
+      ctx.beginPath();
+      ctx.moveTo(curvePoints[0].x, curvePoints[0].y);
+      for (let i = 0; i < curvePoints.length - 1; i++) {
+        const xc = (curvePoints[i].x + curvePoints[i + 1].x) / 2;
+        const yc = (curvePoints[i].y + curvePoints[i + 1].y) / 2;
+        ctx.quadraticCurveTo(curvePoints[i].x, curvePoints[i].y, xc, yc);
+      }
+      ctx.lineTo(curvePoints[curvePoints.length - 1].x, curvePoints[curvePoints.length - 1].y);
 
-    // 5. Band Control Points
+      ctx.shadowColor = '#60a5fa';
+      ctx.shadowBlur = 10;
+      ctx.strokeStyle = '#8ab4f8';
+      ctx.lineWidth = 2.8;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // 5. Band Control Points & Guidelines
     state.eqBands.forEach((band, idx) => {
       const nx = freqToX(band.freq, w);
       const ny = dbToY(band.gain, h);
       const isSelected = idx === state.selectedEqBand;
 
-      if (isSelected) {
-        // Vertical dashed drop line to 0 dB
+      // Subtle dashed vertical guideline from node to 0dB line
+      if (Math.abs(band.gain) > 0.3) {
         const yZero = dbToY(0, h);
         ctx.beginPath();
-        ctx.setLineDash([3, 3]);
+        ctx.setLineDash([2, 3]);
         ctx.moveTo(nx, ny);
         ctx.lineTo(nx, yZero);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.strokeStyle = isSelected ? hexToRgba(band.color || '#60a5fa', 0.6) : 'rgba(255, 255, 255, 0.18)';
         ctx.lineWidth = 1;
         ctx.stroke();
         ctx.setLineDash([]);
-
-        // Outer glow halo
-        ctx.beginPath();
-        ctx.arc(nx, ny, 16, 0, Math.PI * 2);
-        ctx.fillStyle = hexToRgba(band.color || '#60a5fa', 0.28);
-        ctx.fill();
       }
 
-      // Center Node
+      // If SELECTED: Solid drop line down to bottom axis + dual glowing halo
+      if (isSelected) {
+        ctx.beginPath();
+        ctx.moveTo(nx, ny);
+        ctx.lineTo(nx, h);
+        ctx.strokeStyle = hexToRgba(band.color || '#60a5fa', 0.5);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Dual radial glowing halo
+        const haloGrad = ctx.createRadialGradient(nx, ny, 4, nx, ny, 22);
+        haloGrad.addColorStop(0, hexToRgba(band.color || '#60a5fa', 0.45));
+        haloGrad.addColorStop(0.6, hexToRgba(band.color || '#60a5fa', 0.15));
+        haloGrad.addColorStop(1, hexToRgba(band.color || '#60a5fa', 0.0));
+
+        ctx.beginPath();
+        ctx.arc(nx, ny, 22, 0, Math.PI * 2);
+        ctx.fillStyle = haloGrad;
+        ctx.fill();
+
+        // Crosshair tick marks inside halo
+        ctx.beginPath();
+        ctx.moveTo(nx - 3.5, ny);
+        ctx.lineTo(nx + 3.5, ny);
+        ctx.moveTo(nx, ny - 3.5);
+        ctx.lineTo(nx, ny + 3.5);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // Center Node Dot
       ctx.beginPath();
       ctx.arc(nx, ny, 6.5, 0, Math.PI * 2);
       ctx.fillStyle = band.color || '#60a5fa';
@@ -5226,11 +5313,37 @@ function initDockBarControls() {
     if (dropdown) dropdown.classList.add('hidden');
   }
 
+  function toggleEqModal() {
+    const scrim = $('#eqModalScrim');
+    if (!scrim) return;
+    if (scrim.classList.contains('hidden')) {
+      openEqModal();
+    } else {
+      closeEqModal();
+    }
+  }
+
+  window.drawEqCanvas = drawEqCanvas;
+  window.updateEqPresetUI = updateEqPresetUI;
+  window.updateEqBottomPanel = updateEqBottomPanel;
+  window.addEqBand = addEqBand;
+  window.removeEqBand = removeEqBand;
+  window.openEqModal = openEqModal;
+  window.closeEqModal = closeEqModal;
+  window.toggleEqModal = toggleEqModal;
+
   // Setup Equalizer event handlers
   if (dom.dockEqBtn) {
     dom.dockEqBtn.onclick = (e) => {
       e.stopPropagation();
-      openEqModal();
+      toggleEqModal();
+    };
+  }
+
+  if (dom.topbarEqBtn) {
+    dom.topbarEqBtn.onclick = (e) => {
+      e.stopPropagation();
+      toggleEqModal();
     };
   }
 
@@ -5251,23 +5364,42 @@ function initDockBarControls() {
       e.stopPropagation();
       eqPresetDropdown.classList.toggle('hidden');
     };
+
+    eqPresetDropdown.addEventListener('click', e => {
+      e.stopPropagation();
+      const item = e.target.closest('.eq-preset-item');
+      if (!item) return;
+      const p = item.dataset.preset;
+      if (p) {
+        setEqPreset(p);
+        eqPresetDropdown.classList.add('hidden');
+      }
+    });
+
     document.addEventListener('pointerdown', e => {
-      if (!eqPresetDropdown.contains(e.target) && e.target !== eqPresetBtn) {
+      if (!eqPresetDropdown.contains(e.target) && e.target !== eqPresetBtn && !eqPresetBtn.contains(e.target)) {
         eqPresetDropdown.classList.add('hidden');
       }
     });
   }
 
-  $$('.eq-preset-item').forEach(btn => {
-    btn.onclick = () => {
-      const p = btn.dataset.preset;
-      setEqPreset(p);
-      if (eqPresetDropdown) eqPresetDropdown.classList.add('hidden');
-    };
-  });
-
   const eqAddBandTopBtn = $('#eqAddBandTopBtn');
-  if (eqAddBandTopBtn) eqAddBandTopBtn.onclick = () => addEqBand(1000, 0);
+  if (eqAddBandTopBtn) {
+    eqAddBandTopBtn.onclick = () => {
+      const presetName = prompt('Название нового пресета эквалайзера:');
+      if (presetName && presetName.trim()) {
+        const clean = presetName.trim();
+        EQ_PRESETS[clean.toLowerCase()] = state.eqBands.map(b => ({
+          freq: b.freq,
+          gain: b.gain,
+          q: b.q,
+          type: b.type,
+        }));
+        setEqPreset(clean.toLowerCase(), false);
+        toast(`Пресет "${clean}" сохранён`);
+      }
+    };
+  }
 
   const eqAddBandBtn = $('#eqAddBandBtn');
   if (eqAddBandBtn) eqAddBandBtn.onclick = () => addEqBand(1000, 0);
@@ -5316,6 +5448,68 @@ function initDockBarControls() {
     };
   }
 
+  // Keyboard navigation & deletion inside EQ modal
+  document.addEventListener('keydown', e => {
+    const scrim = $('#eqModalScrim');
+    if (!scrim || scrim.classList.contains('hidden')) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeEqModal();
+      return;
+    }
+
+    if (state.selectedEqBand >= 0 && state.eqBands[state.selectedEqBand]) {
+      const b = state.eqBands[state.selectedEqBand];
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        removeEqBand(state.selectedEqBand);
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        b.gain = Math.min(MAX_DB, Math.round((b.gain + 0.5) * 10) / 10);
+        state.eqPreset = 'custom';
+        updateFilterNode(state.selectedEqBand);
+        updateEqBottomPanel();
+        drawEqCanvas();
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        b.gain = Math.max(MIN_DB, Math.round((b.gain - 0.5) * 10) / 10);
+        state.eqPreset = 'custom';
+        updateFilterNode(state.selectedEqBand);
+        updateEqBottomPanel();
+        drawEqCanvas();
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        b.freq = Math.max(MIN_FREQ, Math.round(b.freq * 0.96));
+        state.eqPreset = 'custom';
+        updateFilterNode(state.selectedEqBand);
+        updateEqBottomPanel();
+        drawEqCanvas();
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        b.freq = Math.min(MAX_FREQ, Math.round(b.freq * 1.04));
+        state.eqPreset = 'custom';
+        updateFilterNode(state.selectedEqBand);
+        updateEqBottomPanel();
+        drawEqCanvas();
+        return;
+      }
+    }
+  });
+
   // Setup canvas dragging & mouse wheel
   const canvas = $('#eqCanvas');
   if (canvas) {
@@ -5339,7 +5533,7 @@ function initDockBarControls() {
         const b = state.eqBands[i];
         const nx = freqToX(b.freq, w);
         const ny = dbToY(b.gain, h);
-        if (Math.hypot(x - nx, y - ny) <= 20) {
+        if (Math.hypot(x - nx, y - ny) <= 24) {
           hit = i;
           break;
         }
@@ -5377,7 +5571,7 @@ function initDockBarControls() {
       for (const b of state.eqBands) {
         const nx = freqToX(b.freq, w);
         const ny = dbToY(b.gain, h);
-        if (Math.hypot(x - nx, y - ny) <= 16) {
+        if (Math.hypot(x - nx, y - ny) <= 20) {
           hover = true;
           break;
         }
@@ -5409,7 +5603,7 @@ function initDockBarControls() {
         const b = state.eqBands[i];
         const nx = freqToX(b.freq, w);
         const ny = dbToY(b.gain, h);
-        if (Math.hypot(x - nx, y - ny) <= 22) {
+        if (Math.hypot(x - nx, y - ny) <= 24) {
           target = i;
           state.selectedEqBand = i;
           break;
