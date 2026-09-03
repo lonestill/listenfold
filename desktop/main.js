@@ -374,6 +374,7 @@ async function spawnBackendOnce(root, port) {
       PORT: String(port),
       LISTENFOLD_DATA_DIR: userDataDir,
       YTDLP_PATH: resolveYtdlpBinary(root),
+      LISTENFOLD_APP_VERSION: app.getVersion(),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,

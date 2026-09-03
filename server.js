@@ -53,8 +53,30 @@ const audioDir = path.join(cacheDir, 'audio');
 const playlistCacheDir = path.join(cacheDir, 'playlists');
 const updatesDir = path.join(cacheDir, 'updates');
 const cookieFile = path.join(cacheDir, 'cookies.txt');
-const ytdlpBinary = String(process.env.YTDLP_PATH || 'yt-dlp').trim() || 'yt-dlp';
-const APP_VERSION = require('./package.json').version;
+function getAppVersion() {
+  if (process.env.LISTENFOLD_APP_VERSION) {
+    return process.env.LISTENFOLD_APP_VERSION;
+  }
+  const candidatePaths = [
+    path.join(__dirname, 'package.json'),
+    path.join(__dirname, '..', 'app.asar', 'package.json'),
+    path.join(__dirname, '..', 'package.json'),
+    path.join(process.resourcesPath || '', 'app.asar', 'package.json'),
+  ];
+  for (const p of candidatePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (data && data.version) return data.version;
+      }
+    } catch {}
+  }
+  try {
+    return require('./package.json').version;
+  } catch {}
+  return '0.1.8';
+}
+const APP_VERSION = getAppVersion();
 
 function safeChmod(target, mode) {
   try { fs.chmodSync(target, mode); } catch {}
